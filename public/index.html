@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern App with Image Uploads</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --primary: #6366f1;
+            --text: #f8fafc;
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 28px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+        .header h1 { font-size: 1.5rem; margin: 0; }
+
+        form { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+        input, textarea, button { border-radius: 8px; padding: 12px; font-size: 1rem; outline: none; }
+        input[type="text"], textarea { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.15); color: var(--text); }
+        input[type="file"] { color: var(--text); font-size: 0.9rem; }
+        
+        button { background: var(--primary); color: white; border: none; font-weight: 600; cursor: pointer; }
+        button:hover { background: #4f46e5; }
+
+        .messages { display: flex; flex-direction: column; gap: 12px; max-height: 300px; overflow-y: auto; }
+        .msg-card { background: rgba(15, 23, 42, 0.4); border-left: 3px solid var(--primary); padding: 12px; border-radius: 6px; }
+        .msg-author { font-weight: bold; font-size: 0.9rem; color: var(--primary); }
+        .msg-text { margin-top: 4px; font-size: 0.95rem; }
+        .msg-img { width: 100%; max-height: 200px; object-fit: cover; border-radius: 6px; margin-top: 8px; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="header">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+            <h1>Database Guestbook</h1>
+        </div>
+
+        <form id="dataForm" enctype="multipart/form-data">
+            <input type="text" id="name" name="name" placeholder="Your Name" required>
+            <textarea id="message" name="message" placeholder="Write a message..." rows="2" required></textarea>
+            <input type="file" id="image" name="image" accept="image/*">
+            <button type="submit">Submit Post</button>
+        </form>
+
+        <div class="messages" id="messagesList"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('dataForm');
+        const messagesList = document.getElementById('messagesList');
+
+        async function fetchMessages() {
+            const res = await fetch('/api/messages');
+            const data = await res.json();
+            messagesList.innerHTML = data.map(m => `
+                <div class="msg-card">
+                    <div class="msg-author">${escapeHtml(m.name)}</div>
+                    <div class="msg-text">${escapeHtml(m.message)}</div>
+                    ${m.image_url ? `<img class="msg-img" src="${m.image_url}" alt="Uploaded image">` : ''}
+                </div>
+            `).join('');
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+
+            await fetch('/api/messages', {
+                method: 'POST',
+                body: formData
+            });
+
+            form.reset();
+            fetchMessages();
+        });
+
+        function escapeHtml(text) {
+            return text.replace(/[&<>"']/g, "");
+        }
+
+        fetchMessages();
+    </script>
+</body>
+</html>
