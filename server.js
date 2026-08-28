@@ -59,10 +59,12 @@ app.post('/api/messages', upload.single('image'), (req, res) => {
         }
     );
 });
+
 // Catch-all route to serve index.html for any unhandled GET request
-app.get('(.*)', (req, res) => {
+app.get('/*path', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
