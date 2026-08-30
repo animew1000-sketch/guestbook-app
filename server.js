@@ -62,7 +62,9 @@ app.get('/api/messages', async (req, res) => {
 // 5. API Endpoint: Post a new message with Cloudinary image upload
 app.post('/api/messages', upload.single('image'), async (req, res) => {
     const { name, message } = req.body;
-    const imageUrl = req.file ? req.file.path : null; // Cloudinary returns an HTTPS URL
+    
+    // Cloudinary returns the uploaded image URL in req.file.path or req.file.secure_url
+    const imageUrl = req.file ? (req.file.path || req.file.secure_url) : null;
 
     try {
         const result = await pool.query(
@@ -71,6 +73,7 @@ app.post('/api/messages', upload.single('image'), async (req, res) => {
         );
         res.json(result.rows[0]);
     } catch (err) {
+        console.error('Database insertion error:', err);
         res.status(500).json({ error: err.message });
     }
 });
