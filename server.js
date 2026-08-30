@@ -57,6 +57,7 @@ async function initDb() {
         console.error('Error creating database tables:', err);
     }
 }
+initDb();
 
 // 2. Configure Cloudinary Storage for Multer
 cloudinary.v2.config({
@@ -219,7 +220,7 @@ app.post('/api/messages', upload.single('image'), async (req, res) => {
     }
 });
 
-// Serve index.html Catch-all
+// Catch-all route to serve index.html
 app.get('/*path', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
