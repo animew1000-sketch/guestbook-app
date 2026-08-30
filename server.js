@@ -3,7 +3,7 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const { Pool } = require('pg');
-const cloudinary = require('cloudinary').v2;
+const cloudinary = require('cloudinary');
 
 // Safe import for CloudinaryStorage across different package versions
 const multerCloudinary = require('multer-storage-cloudinary');
@@ -30,7 +30,7 @@ pool.query(`
 `).catch(err => console.error('Error creating database table:', err));
 
 // 2. Configure Cloudinary Storage for Multer
-cloudinary.config({
+cloudinary.v2.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
