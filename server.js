@@ -49,13 +49,14 @@ async function initDb() {
                 image_url TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
         `);
         console.log('Database tables initialized successfully');
     } catch (err) {
         console.error('Error creating database tables:', err);
     }
 }
-initDb();
 
 // 2. Configure Cloudinary Storage for Multer
 cloudinary.v2.config({
