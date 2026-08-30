@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Modern App with Image Uploads</title>
+    <title>Guestbook & Social Feed</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
     <style>
         :root {
@@ -27,7 +27,7 @@
 
         .container {
             width: 100%;
-            max-width: 500px;
+            max-width: 550px;
             background: var(--card-bg);
             backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.1);
@@ -36,105 +36,244 @@
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
         }
 
-        .header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
-        .header h1 { font-size: 1.5rem; margin: 0; }
+        .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+        .header h1 { font-size: 1.4rem; margin: 0; }
+        
+        .auth-bar { background: rgba(15, 23, 42, 0.5); padding: 10px 14px; border-radius: 8px; margin-bottom: 20px; font-size: 0.9rem; display: flex; justify-content: space-between; align-items: center; }
+
+        .tab-buttons { display: flex; gap: 8px; margin-bottom: 16px; }
+        .tab-btn { flex: 1; padding: 8px; background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(255,255,255,0.1); color: var(--text); border-radius: 6px; cursor: pointer; text-align: center; font-size: 0.85rem; }
+        .tab-btn.active { background: var(--primary); font-weight: bold; border-color: var(--primary); }
 
         form { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
-        input, textarea, button { border-radius: 8px; padding: 12px; font-size: 1rem; outline: none; }
-        input[type="text"], textarea { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.15); color: var(--text); }
-        input[type="file"] { color: var(--text); font-size: 0.9rem; }
+        input, textarea, button { border-radius: 8px; padding: 12px; font-size: 0.95rem; outline: none; }
+        input[type="text"], input[type="email"], input[type="password"], textarea { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.15); color: var(--text); }
+        input[type="file"] { color: var(--text); font-size: 0.85rem; }
         
         button { background: var(--primary); color: white; border: none; font-weight: 600; cursor: pointer; }
         button:hover { background: #4f46e5; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-small { padding: 4px 10px; font-size: 0.8rem; border-radius: 4px; }
 
-        .messages { display: flex; flex-direction: column; gap: 12px; max-height: 300px; overflow-y: auto; }
-        .msg-card { background: rgba(15, 23, 42, 0.4); border-left: 3px solid var(--primary); padding: 12px; border-radius: 6px; }
+        .messages { display: flex; flex-direction: column; gap: 12px; max-height: 320px; overflow-y: auto; }
+        .msg-card { background: rgba(15, 23, 42, 0.4); border-left: 3px solid var(--primary); padding: 12px; border-radius: 6px; position: relative; }
+        .msg-header { display: flex; justify-content: space-between; align-items: center; }
         .msg-author { font-weight: bold; font-size: 0.9rem; color: var(--primary); }
-        .msg-text { margin-top: 4px; font-size: 0.95rem; }
+        .msg-text { margin-top: 6px; font-size: 0.95rem; }
         .msg-img { width: 100%; max-height: 250px; object-fit: cover; border-radius: 6px; margin-top: 8px; display: block; }
+        
+        .hidden { display: none !important; }
     </style>
 </head>
 <body>
 
     <div class="container">
         <div class="header">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-            </svg>
-            <h1>Database Guestbook</h1>
+            <h1>Guestbook & Social</h1>
         </div>
 
+        <!-- Account Status / Login Section -->
+        <div id="authStatus" class="auth-bar">
+            <span id="userGreeting">Not logged in</span>
+            <button id="authToggleBtn" class="btn-small">Login / Register</button>
+        </div>
+
+        <!-- Auth Form (Hidden by default) -->
+        <div id="authFormContainer" class="hidden">
+            <div class="tab-buttons">
+                <div id="tabLogin" class="tab-btn active" onclick="switchAuthTab('login')">Login</div>
+                <div id="tabRegister" class="tab-btn" onclick="switchAuthTab('register')">Create Profile</div>
+            </div>
+
+            <form id="authForm">
+                <input type="email" id="authEmail" placeholder="Email Address" required>
+                <input type="password" id="authPassword" placeholder="Password" required>
+                <input type="text" id="authUsername" class="hidden" placeholder="Choose a Username">
+                <button type="submit" id="authSubmitBtn">Login</button>
+            </form>
+        </div>
+
+        <!-- Post Form -->
         <form id="dataForm" enctype="multipart/form-data">
-            <input type="text" id="name" name="name" placeholder="Please write your full name" required>
-            <textarea id="message" name="message" placeholder="Write a message about your self..." rows="2" required></textarea>
+            <input type="text" id="name" name="name" placeholder="Your Name or Display Name" required>
+            <textarea id="message" name="message" placeholder="Write a public update..." rows="2" required></textarea>
             <input type="file" id="image" name="image" accept="image/*">
             <button type="submit" id="submitBtn">Submit Post</button>
         </form>
 
+        <!-- Feed Tabs -->
+        <div class="tab-buttons">
+            <div id="tabPublic" class="tab-btn active" onclick="switchFeedTab('public')">Public Feed</div>
+            <div id="tabFollowing" class="tab-btn" onclick="switchFeedTab('following')">Following Feed</div>
+        </div>
+
+        <!-- Message List -->
         <div class="messages" id="messagesList"></div>
     </div>
 
     <script>
-        const form = document.getElementById('dataForm');
+        let currentUser = JSON.parse(localStorage.getItem('user')) || null;
+        let authToken = localStorage.getItem('token') || null;
+        let activeAuthMode = 'login';
+        let currentFeed = 'public';
+
+        const authStatus = document.getElementById('authStatus');
+        const userGreeting = document.getElementById('userGreeting');
+        const authToggleBtn = document.getElementById('authToggleBtn');
+        const authFormContainer = document.getElementById('authFormContainer');
+        const authForm = document.getElementById('authForm');
+        const authUsername = document.getElementById('authUsername');
+        const authSubmitBtn = document.getElementById('authSubmitBtn');
+
+        const dataForm = document.getElementById('dataForm');
         const submitBtn = document.getElementById('submitBtn');
         const messagesList = document.getElementById('messagesList');
 
-        function escapeHtml(text) {
-            if (!text) return '';
-            return String(text)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
-        async function fetchMessages() {
-            try {
-                const res = await fetch('/api/messages');
-                if (!res.ok) throw new Error('Failed to fetch messages');
-                const data = await res.json();
-                
-                messagesList.innerHTML = data.map(m => `
-                    <div class="msg-card">
-                        <div class="msg-author">${escapeHtml(m.name)}</div>
-                        <div class="msg-text">${escapeHtml(m.message)}</div>
-                        ${m.image_url ? `<img class="msg-img" src="${m.image_url}" alt="Uploaded image" />` : ''}
-                    </div>
-                `).join('');
-            } catch (err) {
-                console.error('Error fetching messages:', err);
+        function updateAuthUI() {
+            if (currentUser) {
+                userGreeting.innerText = `Logged in as @${currentUser.username}`;
+                authToggleBtn.innerText = 'Logout';
+                document.getElementById('name').value = currentUser.username;
+            } else {
+                userGreeting.innerText = 'Not logged in';
+                authToggleBtn.innerText = 'Login / Register';
             }
         }
 
-        form.addEventListener('submit', async (e) => {
+        authToggleBtn.addEventListener('click', () => {
+            if (currentUser) {
+                localStorage.removeItem('user');
+                localStorage.removeItem('token');
+                currentUser = null;
+                authToken = null;
+                updateAuthUI();
+                fetchMessages();
+            } else {
+                authFormContainer.classList.toggle('hidden');
+            }
+        });
+
+        function switchAuthTab(mode) {
+            activeAuthMode = mode;
+            document.getElementById('tabLogin').classList.toggle('active', mode === 'login');
+            document.getElementById('tabRegister').classList.toggle('active', mode === 'register');
+            authUsername.classList.toggle('hidden', mode === 'login');
+            authUsername.required = mode === 'register';
+            authSubmitBtn.innerText = mode === 'login' ? 'Login' : 'Create Profile';
+        }
+
+        authForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+            const email = document.getElementById('authEmail').value;
+            const password = document.getElementById('authPassword').value;
+            const username = authUsername.value;
+
+            const endpoint = activeAuthMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+            const body = activeAuthMode === 'login' ? { email, password } : { email, password, username };
+
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+
+                if (!res.ok) throw new Error(data.error || 'Authentication failed');
+
+                if (activeAuthMode === 'register') {
+                    alert('Profile created! You can now log in.');
+                    switchAuthTab('login');
+                } else {
+                    currentUser = data.user;
+                    authToken = data.token;
+                    localStorage.setItem('user', JSON.stringify(currentUser));
+                    localStorage.setItem('token', authToken);
+                    updateAuthUI();
+                    authFormContainer.classList.add('hidden');
+                    fetchMessages();
+                }
+            } catch (err) {
+                alert(err.message);
+            }
+        });
+
+        function switchFeedTab(feedType) {
+            currentFeed = feedType;
+            document.getElementById('tabPublic').classList.toggle('active', feedType === 'public');
+            document.getElementById('tabFollowing').classList.toggle('active', feedType === 'following');
+            fetchMessages();
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return String(text).replace(/[&<>"']/g, "");
+        }
+
+        async function followUser(userId) {
+            if (!authToken) return alert('Please log in to follow users');
+            try {
+                const res = await fetch(`/api/users/${userId}/follow`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+                alert('Followed user successfully!');
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        async function fetchMessages() {
+            const endpoint = currentFeed === 'following' ? '/api/feed' : '/api/messages';
+            const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+
+            try {
+                const res = await fetch(endpoint, { headers });
+                if (!res.ok) throw new Error('Failed to fetch posts');
+                const data = await res.json();
+
+                messagesList.innerHTML = data.map(m => `
+                    <div class="msg-card">
+                        <div class="msg-header">
+                            <div class="msg-author">${escapeHtml(m.username ? '@' + m.username : m.name)}</div>
+                            ${m.user_id && currentUser && m.user_id !== currentUser.id ? 
+                                `<button class="btn-small" onclick="followUser(${m.user_id})">Follow</button>` : ''}
+                        </div>
+                        <div class="msg-text">${escapeHtml(m.message)}</div>
+                        ${m.image_url ? `<img class="msg-img" src="${m.image_url}" alt="Uploaded post image" />` : ''}
+                    </div>
+                `).join('');
+            } catch (err) {
+                messagesList.innerHTML = `<p style="font-size:0.85rem; color:#f87171;">${err.message}</p>`;
+            }
+        }
+
+        dataForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
             submitBtn.disabled = true;
             submitBtn.innerText = 'Uploading...';
 
             try {
-                const formData = new FormData(form);
+                const formData = new FormData(dataForm);
+                if (currentUser) formData.append('userId', currentUser.id);
 
-                const res = await fetch('/api/messages', {
-                    method: 'POST',
-                    body: formData
-                });
-
+                const res = await fetch('/api/messages', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Upload failed');
 
-                form.reset();
+                dataForm.reset();
+                if (currentUser) document.getElementById('name').value = currentUser.username;
                 await fetchMessages();
             } catch (err) {
-                alert('Error uploading post or image. Please check your Cloudinary configuration.');
-                console.error(err);
+                alert('Error submitting post.');
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.innerText = 'Submit Post';
             }
         });
 
+        updateAuthUI();
         fetchMessages();
     </script>
 </body>
