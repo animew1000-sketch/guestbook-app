@@ -40,7 +40,7 @@ const storage = new CloudinaryStorage({
         allowed_formats: ['jpg', 'png', 'jpeg', 'gif', 'webp']
     }
 });
-const upload = multer({ storage });
+const upload = multer({ storage: storage });
 
 // 3. Middleware
 app.use(bodyParser.json());
