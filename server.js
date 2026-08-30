@@ -3,9 +3,8 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const { Pool } = require('pg');
-const cloudinary = require('cloudinary').v2;
-const CloudinaryStorage = require('multer-storage-cloudinary').CloudinaryStorage || require('multer-storage-cloudinary');
-
+const cloudinary = require('cloudinary');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -34,7 +33,7 @@ cloudinary.config({
 });
 
 const storage = new CloudinaryStorage({
-    cloudinary: cloudinary,
+    cloudinary: cloudinary.v2,
     params: {
         folder: 'guestbook_uploads',
         allowed_formats: ['jpg', 'png', 'jpeg', 'gif', 'webp']
