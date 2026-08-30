@@ -220,6 +220,29 @@ app.post('/api/messages', upload.single('image'), async (req, res) => {
     }
 });
 
+// Delete a Message
+app.delete('/api/messages/:id', async (req, res) => {
+    const messageId = req.params.id;
+    const { userId, name } = req.body;
+
+    try {
+        const { rows } = await pool.query('SELECT * FROM messages WHERE id = $1', [messageId]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Post not found' });
+
+        const msg = rows[0];
+        const isOwner = (userId && msg.user_id === parseInt(userId)) || (name && msg.name === name);
+
+        if (!isOwner) {
+            return res.status(403).json({ error: 'You do not have permission to delete this post' });
+        }
+
+        await pool.query('DELETE FROM messages WHERE id = $1', [messageId]);
+        res.json({ message: 'Post deleted successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Catch-all route to serve index.html
 app.get('/*path', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));

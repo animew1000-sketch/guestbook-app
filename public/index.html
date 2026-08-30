@@ -78,7 +78,7 @@
             <button id="authToggleBtn" class="btn-small">Login / Register</button>
         </div>
 
-        <!-- Auth Form (Hidden by default) -->
+        <!-- Auth Form -->
         <div id="authFormContainer" class="hidden">
             <div class="tab-buttons">
                 <div id="tabLogin" class="tab-btn active" onclick="switchAuthTab('login')">Login</div>
@@ -117,7 +117,6 @@
         let activeAuthMode = 'login';
         let currentFeed = 'public';
 
-        const authStatus = document.getElementById('authStatus');
         const userGreeting = document.getElementById('userGreeting');
         const authToggleBtn = document.getElementById('authToggleBtn');
         const authFormContainer = document.getElementById('authFormContainer');
@@ -225,6 +224,31 @@
             }
         }
 
+        async function deletePost(messageId) {
+            if (!confirm('Are you sure you want to delete this post?')) return;
+
+            const currentName = document.getElementById('name').value;
+            const bodyData = {
+                userId: currentUser ? currentUser.id : null,
+                name: currentName
+            };
+
+            try {
+                const res = await fetch(`/api/messages/${messageId}`, {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(bodyData)
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to delete post');
+
+                fetchMessages();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
         async function fetchMessages() {
             const endpoint = currentFeed === 'following' ? '/api/feed' : '/api/messages';
             const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
@@ -234,17 +258,25 @@
                 if (!res.ok) throw new Error('Failed to fetch posts');
                 const data = await res.json();
 
-                messagesList.innerHTML = data.map(m => `
-                    <div class="msg-card">
-                        <div class="msg-header">
-                            <div class="msg-author">${escapeHtml(m.username ? '@' + m.username : m.name)}</div>
-                            ${m.user_id && currentUser && m.user_id !== currentUser.id ? 
-                                `<button class="btn-small" onclick="followUser(${m.user_id})">Follow</button>` : ''}
+                messagesList.innerHTML = data.map(m => {
+                    const isOwner = (currentUser && m.user_id === currentUser.id) || 
+                                    (document.getElementById('name').value && m.name === document.getElementById('name').value);
+
+                    return `
+                        <div class="msg-card">
+                            <div class="msg-header">
+                                <div class="msg-author">${escapeHtml(m.username ? '@' + m.username : m.name)}</div>
+                                <div>
+                                    ${m.user_id && currentUser && m.user_id !== currentUser.id ? 
+                                        `<button class="btn-small" onclick="followUser(${m.user_id})">Follow</button>` : ''}
+                                    ${isOwner ? `<button class="btn-small" style="background:#ef4444;" onclick="deletePost(${m.id})">Delete</button>` : ''}
+                                </div>
+                            </div>
+                            <div class="msg-text">${escapeHtml(m.message)}</div>
+                            ${m.image_url ? `<img class="msg-img" src="${m.image_url}" alt="Uploaded post image" />` : ''}
                         </div>
-                        <div class="msg-text">${escapeHtml(m.message)}</div>
-                        ${m.image_url ? `<img class="msg-img" src="${m.image_url}" alt="Uploaded post image" />` : ''}
-                    </div>
-                `).join('');
+                    `;
+                }).join('');
             } catch (err) {
                 messagesList.innerHTML = `<p style="font-size:0.85rem; color:#f87171;">${err.message}</p>`;
             }
