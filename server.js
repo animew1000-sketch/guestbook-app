@@ -1,66 +1,78 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
+const { Pool } = require('pg');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Ensure uploads folder exists
-const uploadDir = path.join(__dirname, 'public/uploads');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Configure Multer for local image storage
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
+// 1. Configure PostgreSQL Connection
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
 });
-const upload = multer({ storage });
 
-// Middleware
-app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Initialize SQLite Database
-const db = new sqlite3.Database('./database.db');
-
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+// Create table in PostgreSQL on startup
+pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
         name TEXT,
         message TEXT,
         image_url TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+`).catch(err => console.error('Error creating database table:', err));
+
+// 2. Configure Cloudinary Storage for Multer
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// API Endpoint: Get all messages
-app.get('/api/messages', (req, res) => {
-    db.all("SELECT * FROM messages ORDER BY id DESC", [], (err, rows) => {
-        if (err) res.status(500).json({ error: err.message });
-        else res.json(rows);
-    });
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'guestbook_uploads',
+        allowed_formats: ['jpg', 'png', 'jpeg', 'gif', 'webp']
+    }
+});
+const upload = multer({ storage });
+
+// 3. Middleware
+app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 4. API Endpoint: Get all messages
+app.get('/api/messages', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM messages ORDER BY id DESC');
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// API Endpoint: Post a new message with image upload
-app.post('/api/messages', upload.single('image'), (req, res) => {
+// 5. API Endpoint: Post a new message with Cloudinary image upload
+app.post('/api/messages', upload.single('image'), async (req, res) => {
     const { name, message } = req.body;
-    const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    const imageUrl = req.file ? req.file.path : null; // Cloudinary returns an HTTPS URL
 
-    db.run("INSERT INTO messages (name, message, image_url) VALUES (?, ?, ?)", 
-        [name, message, imageUrl], 
-        function(err) {
-            if (err) res.status(500).json({ error: err.message });
-            else res.json({ id: this.lastID, name, message, image_url: imageUrl });
-        }
-    );
+    try {
+        const result = await pool.query(
+            'INSERT INTO messages (name, message, image_url) VALUES ($1, $2, $3) RETURNING *',
+            [name, message, imageUrl]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Catch-all route to serve index.html for any unhandled GET request
+// 6. Catch-all route to serve index.html
 app.get('/*path', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
