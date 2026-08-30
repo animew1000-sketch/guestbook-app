@@ -4,7 +4,10 @@ const multer = require('multer');
 const path = require('path');
 const { Pool } = require('pg');
 const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
+// Safe import for CloudinaryStorage across different package versions
+const multerCloudinary = require('multer-storage-cloudinary');
+const CloudinaryStorage = multerCloudinary.CloudinaryStorage || multerCloudinary;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
