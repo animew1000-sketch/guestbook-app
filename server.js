@@ -5,6 +5,7 @@ const path = require('path');
 const { Pool } = require('pg');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -26,14 +27,14 @@ pool.query(`
 `).catch(err => console.error('Error creating database table:', err));
 
 // 2. Configure Cloudinary Storage for Multer
-cloudinary.v2.config({
+cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
 const storage = new CloudinaryStorage({
-    cloudinary: cloudinary.v2,
+    cloudinary: cloudinary,
     params: {
         folder: 'guestbook_uploads',
         allowed_formats: ['jpg', 'png', 'jpeg', 'gif', 'webp']
