@@ -46,12 +46,13 @@
         
         button { background: var(--primary); color: white; border: none; font-weight: 600; cursor: pointer; }
         button:hover { background: #4f46e5; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .messages { display: flex; flex-direction: column; gap: 12px; max-height: 300px; overflow-y: auto; }
         .msg-card { background: rgba(15, 23, 42, 0.4); border-left: 3px solid var(--primary); padding: 12px; border-radius: 6px; }
         .msg-author { font-weight: bold; font-size: 0.9rem; color: var(--primary); }
         .msg-text { margin-top: 4px; font-size: 0.95rem; }
-        .msg-img { width: 100%; max-height: 200px; object-fit: cover; border-radius: 6px; margin-top: 8px; }
+        .msg-img { width: 100%; max-height: 250px; object-fit: cover; border-radius: 6px; margin-top: 8px; display: block; }
     </style>
 </head>
 <body>
@@ -68,7 +69,7 @@
             <input type="text" id="name" name="name" placeholder="Please write your full name" required>
             <textarea id="message" name="message" placeholder="Write a message about your self..." rows="2" required></textarea>
             <input type="file" id="image" name="image" accept="image/*">
-            <button type="submit">Submit Post</button>
+            <button type="submit" id="submitBtn">Submit Post</button>
         </form>
 
         <div class="messages" id="messagesList"></div>
@@ -76,36 +77,63 @@
 
     <script>
         const form = document.getElementById('dataForm');
+        const submitBtn = document.getElementById('submitBtn');
         const messagesList = document.getElementById('messagesList');
 
+        function escapeHtml(text) {
+            if (!text) return '';
+            return String(text)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
         async function fetchMessages() {
-            const res = await fetch('/api/messages');
-            const data = await res.json();
-            messagesList.innerHTML = data.map(m => `
-                <div class="msg-card">
-                    <div class="msg-author">${escapeHtml(m.name)}</div>
-                    <div class="msg-text">${escapeHtml(m.message)}</div>
-                    ${m.image_url ? `<img class="msg-img" src="${m.image_url}" alt="Uploaded image">` : ''}
-                </div>
-            `).join('');
+            try {
+                const res = await fetch('/api/messages');
+                if (!res.ok) throw new Error('Failed to fetch messages');
+                const data = await res.json();
+                
+                messagesList.innerHTML = data.map(m => `
+                    <div class="msg-card">
+                        <div class="msg-author">${escapeHtml(m.name)}</div>
+                        <div class="msg-text">${escapeHtml(m.message)}</div>
+                        ${m.image_url ? `<img class="msg-img" src="${m.image_url}" alt="Uploaded image" />` : ''}
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Error fetching messages:', err);
+            }
         }
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const formData = new FormData(form);
+            
+            submitBtn.disabled = true;
+            submitBtn.innerText = 'Uploading...';
 
-            await fetch('/api/messages', {
-                method: 'POST',
-                body: formData
-            });
+            try {
+                const formData = new FormData(form);
 
-            form.reset();
-            fetchMessages();
+                const res = await fetch('/api/messages', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!res.ok) throw new Error('Upload failed');
+
+                form.reset();
+                await fetchMessages();
+            } catch (err) {
+                alert('Error uploading post or image. Please check your Cloudinary configuration.');
+                console.error(err);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerText = 'Submit Post';
+            }
         });
-
-        function escapeHtml(text) {
-            return text.replace(/[&<>"']/g, "");
-        }
 
         fetchMessages();
     </script>
