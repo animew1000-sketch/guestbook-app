@@ -38,6 +38,7 @@ const pool = mysql.createPool(process.env.MYSQL_URL || {
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000
 });
+
 // Initialize Database Tables
 async function initDb() {
     try {
@@ -269,7 +270,7 @@ app.delete('/api/messages/:id', async (req, res) => {
     }
 });
 
-// Catch-all route to serve index.html for Single Page Application routing
+// Catch-all route to serve index.html
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
