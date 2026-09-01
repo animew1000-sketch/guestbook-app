@@ -2,7 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
-const { Pool } = require('pg');
+const mysql = require('mysql2/promise');
 const cloudinary = require('cloudinary');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -15,46 +15,63 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
 
-// 1. Configure PostgreSQL Connection
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+// 1. Configure MySQL Connection Pool (Clever Cloud / Custom MySQL)
+const pool = mysql.createPool(process.env.MYSQL_URL || {
+    host: process.env.MYSQL_ADDON_HOST || process.env.DB_HOST,
+    user: process.env.MYSQL_ADDON_USER || process.env.DB_USER,
+    password: process.env.MYSQL_ADDON_PASSWORD || process.env.DB_PASSWORD,
+    database: process.env.MYSQL_ADDON_DB || process.env.DB_NAME,
+    port: process.env.MYSQL_ADDON_PORT || process.env.DB_PORT || 3306,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000
 });
 
-// Initialize Database Tables (Users, Follows, Messages)
+// Initialize Database Tables
 async function initDb() {
     try {
-        await pool.query(`
+        const connection = await pool.getConnection();
+
+        await connection.query(`
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
+                id INT AUTO_INCREMENT PRIMARY KEY,
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 username VARCHAR(50) UNIQUE NOT NULL,
                 avatar_url TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+        `);
 
+        await connection.query(`
             CREATE TABLE IF NOT EXISTS follows (
-                follower_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                following_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                follower_id INT,
+                following_id INT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (follower_id, following_id)
+                PRIMARY KEY (follower_id, following_id),
+                FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
             );
+        `);
 
+        await connection.query(`
             CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
                 name TEXT,
                 message TEXT,
                 image_url TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
-
-            ALTER TABLE messages ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
         `);
-        console.log('Database tables initialized successfully');
+
+        connection.release();
+        console.log('MySQL Database tables initialized successfully');
     } catch (err) {
-        console.error('Error creating database tables:', err);
+        console.error('Error creating MySQL database tables:', err);
     }
 }
 initDb();
@@ -104,11 +121,11 @@ app.post('/api/auth/register', async (req, res) => {
 
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
-        const result = await pool.query(
-            'INSERT INTO users (email, password_hash, username) VALUES ($1, $2, $3) RETURNING id, email, username',
+        const [result] = await pool.query(
+            'INSERT INTO users (email, password_hash, username) VALUES (?, ?, ?)',
             [email.toLowerCase(), hashedPassword, username.toLowerCase()]
         );
-        res.status(201).json(result.rows[0]);
+        res.status(201).json({ id: result.insertId, email, username });
     } catch (err) {
         res.status(400).json({ error: 'Email or username already exists' });
     }
@@ -118,7 +135,7 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     try {
-        const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+        const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
         const user = rows[0];
 
         if (!user || !(await bcrypt.compare(password, user.password_hash))) {
@@ -145,7 +162,7 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
 
     try {
         await pool.query(
-            'INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            'INSERT IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)',
             [currentUserId, targetUserId]
         );
         res.json({ message: 'Successfully followed user' });
@@ -158,7 +175,7 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
 app.delete('/api/users/:id/follow', authenticateToken, async (req, res) => {
     try {
         await pool.query(
-            'DELETE FROM follows WHERE follower_id = $1 AND following_id = $2',
+            'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
             [req.user.id, req.params.id]
         );
         res.json({ message: 'Successfully unfollowed user' });
@@ -178,7 +195,7 @@ app.get('/api/messages', async (req, res) => {
             LEFT JOIN users u ON m.user_id = u.id 
             ORDER BY m.id DESC
         `;
-        const { rows } = await pool.query(query);
+        const [rows] = await pool.query(query);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -193,10 +210,10 @@ app.get('/api/feed', authenticateToken, async (req, res) => {
             FROM messages m
             JOIN follows f ON m.user_id = f.following_id
             JOIN users u ON m.user_id = u.id
-            WHERE f.follower_id = $1
+            WHERE f.follower_id = ?
             ORDER BY m.id DESC
         `;
-        const { rows } = await pool.query(query, [req.user.id]);
+        const [rows] = await pool.query(query, [req.user.id]);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -209,11 +226,11 @@ app.post('/api/messages', upload.single('image'), async (req, res) => {
     const imageUrl = req.file ? (req.file.path || req.file.secure_url) : null;
 
     try {
-        const result = await pool.query(
-            'INSERT INTO messages (name, message, image_url, user_id) VALUES ($1, $2, $3, $4) RETURNING *',
+        const [result] = await pool.query(
+            'INSERT INTO messages (name, message, image_url, user_id) VALUES (?, ?, ?, ?)',
             [name, message, imageUrl, userId || null]
         );
-        res.json(result.rows[0]);
+        res.json({ id: result.insertId, name, message, image_url: imageUrl, user_id: userId });
     } catch (err) {
         console.error('Database insertion error:', err);
         res.status(500).json({ error: err.message });
@@ -226,7 +243,7 @@ app.delete('/api/messages/:id', async (req, res) => {
     const { userId, name } = req.body;
 
     try {
-        const { rows } = await pool.query('SELECT * FROM messages WHERE id = $1', [messageId]);
+        const [rows] = await pool.query('SELECT * FROM messages WHERE id = ?', [messageId]);
         if (rows.length === 0) return res.status(404).json({ error: 'Post not found' });
 
         const msg = rows[0];
@@ -236,15 +253,15 @@ app.delete('/api/messages/:id', async (req, res) => {
             return res.status(403).json({ error: 'You do not have permission to delete this post' });
         }
 
-        await pool.query('DELETE FROM messages WHERE id = $1', [messageId]);
+        await pool.query('DELETE FROM messages WHERE id = ?', [messageId]);
         res.json({ message: 'Post deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Catch-all route to serve index.html
-app.get('/*path', (req, res) => {
+// Catch-all route to serve index.html for Single Page Application routing
+app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
