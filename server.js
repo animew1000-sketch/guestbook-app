@@ -15,20 +15,29 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
 
-// 1. Configure MySQL Connection Pool (Clever Cloud / Custom MySQL)
+// 1. Configure MySQL Connection Pool
+const host = process.env.MYSQL_ADDON_HOST || process.env.DB_HOST;
+const user = process.env.MYSQL_ADDON_USER || process.env.DB_USER;
+const password = process.env.MYSQL_ADDON_PASSWORD || process.env.DB_PASSWORD;
+const database = process.env.MYSQL_ADDON_DB || process.env.DB_NAME;
+const port = process.env.MYSQL_ADDON_PORT || process.env.DB_PORT || 3306;
+
+if (!host) {
+    console.error('FATAL ERROR: Database host environment variable is missing!');
+}
+
 const pool = mysql.createPool(process.env.MYSQL_URL || {
-    host: process.env.MYSQL_ADDON_HOST || process.env.DB_HOST,
-    user: process.env.MYSQL_ADDON_USER || process.env.DB_USER,
-    password: process.env.MYSQL_ADDON_PASSWORD || process.env.DB_PASSWORD,
-    database: process.env.MYSQL_ADDON_DB || process.env.DB_NAME,
-    port: process.env.MYSQL_ADDON_PORT || process.env.DB_PORT || 3306,
+    host: host,
+    user: user,
+    password: password,
+    database: database,
+    port: Number(port),
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000
 });
-
 // Initialize Database Tables
 async function initDb() {
     try {
