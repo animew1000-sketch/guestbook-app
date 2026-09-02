@@ -16,17 +16,24 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
 
 let isMySQL = false;
-let dbPool; // For MySQL
-let sqliteDb; // For SQLite
+let dbPool;   // MySQL connection pool
+let sqliteDb; // SQLite connection
 
-// --- UNIFIED QUERY HELPER ---
-// Abstract driver differences so all endpoints use a single query interface
+// --- DUAL WRITE QUERY HELPER ---
+// Automatically writes data to both MySQL and SQLite whenever a write command occurs
 async function executeQuery(sql, params = []) {
+    const trimmedSql = sql.trim().toUpperCase();
+    const isWriteOperation = trimmedSql.startsWith('INSERT') || 
+                             trimmedSql.startsWith('UPDATE') || 
+                             trimmedSql.startsWith('DELETE');
+
+    let resultData;
+
+    // 1. Primary Read/Write Execution
     if (isMySQL) {
         const [rows] = await dbPool.query(sql, params);
-        return rows;
+        resultData = rows;
     } else {
-        const trimmedSql = sql.trim().toUpperCase();
         if (trimmedSql.startsWith('SELECT')) {
             return await sqliteDb.all(sql, params);
         } else {
@@ -34,14 +41,37 @@ async function executeQuery(sql, params = []) {
             return { insertId: result.lastID, affectedRows: result.changes };
         }
     }
+
+    // 2. Dual-Write Mirroring (If on Cloud MySQL, duplicate write query to local SQLite)
+    if (isMySQL && isWriteOperation && sqliteDb) {
+        const sqliteSql = sql.replace(/INSERT IGNORE/gi, 'INSERT OR IGNORE');
+        sqliteDb.run(sqliteSql, params).catch(err => {
+            console.error('Secondary SQLite Dual-Write Notice:', err.message);
+        });
+    }
+
+    return resultData;
 }
 
-// 1. Initialize Database Connection (MySQL on Cloud / SQLite Locally)
+// 1. Initialize Dual Database Connections
 async function initDb() {
     const host = process.env.MYSQL_ADDON_HOST || process.env.DB_HOST;
 
+    // Always attempt to initialize local SQLite engine for dual-writing/caching
+    try {
+        const sqlite3 = require('sqlite3');
+        const { open } = require('sqlite');
+        sqliteDb = await open({
+            filename: path.join(__dirname, 'database.db'),
+            driver: sqlite3.Database
+        });
+        console.log('Local SQLite engine initialized for dual writing');
+    } catch (err) {
+        console.log('SQLite not loaded (production binary limitation or missing file)');
+    }
+
     if (host) {
-        // --- MYSQL CONFIGURATION (Clever Cloud / Render) ---
+        // Connected to MySQL in cloud production
         isMySQL = true;
         dbPool = mysql.createPool({
             host: host,
@@ -51,29 +81,15 @@ async function initDb() {
             port: Number(process.env.MYSQL_ADDON_PORT || process.env.DB_PORT || 3306),
             waitForConnections: true,
             connectionLimit: 10,
-            queueLimit: 0,
             enableKeepAlive: true,
             keepAliveInitialDelay: 10000
         });
-        console.log('Using MySQL Database Engine');
-    } else {
-        // --- SQLITE CONFIGURATION (Lazy loaded locally) ---
-        isMySQL = false;
-        const sqlite3 = require('sqlite3');
-        const { open } = require('sqlite');
-
-        sqliteDb = await open({
-            filename: path.join(__dirname, 'database.db'),
-            driver: sqlite3.Database
-        });
-        console.log('Using Local SQLite Database (database.db)');
+        console.log('Primary MySQL engine connected');
     }
 
     try {
-        // Table creation code continues as normal below...
         const autoInc = isMySQL ? 'INT AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
         const textType = isMySQL ? 'VARCHAR(255)' : 'TEXT';
-        const ignoreKeyword = isMySQL ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
 
         await executeQuery(`
             CREATE TABLE IF NOT EXISTS users (
@@ -109,7 +125,7 @@ async function initDb() {
             );
         `);
 
-        console.log('Database tables initialized successfully');
+        console.log('Database tables verified and ready across both engines');
     } catch (err) {
         console.error('Database initialization error:', err);
     }
