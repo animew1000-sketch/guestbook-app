@@ -57,6 +57,13 @@ async function syncOnce() {
             );
         `);
 
+        // Migration check: Add user_id column to messages table if missing in database.db
+        try {
+            await sqliteDb.exec(`ALTER TABLE messages ADD COLUMN user_id INT;`);
+        } catch (mErr) {
+            // Ignored if column user_id already exists
+        }
+
         // --- PULL USERS ---
         const [users] = await mysqlPool.query('SELECT * FROM users');
         for (const u of users) {
@@ -85,7 +92,7 @@ async function syncOnce() {
                 `INSERT INTO messages (id, user_id, name, message, image_url, created_at) 
                  VALUES (?, ?, ?, ?, ?, ?) 
                  ON CONFLICT(id) DO UPDATE SET 
-                 message=excluded.message, image_url=excluded.image_url`,
+                 message=excluded.message, image_url=excluded.image_url, user_id=excluded.user_id`,
                 [m.id, m.user_id, m.name, m.message, m.image_url, m.created_at]
             );
         }
