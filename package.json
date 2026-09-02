@@ -4,7 +4,8 @@
   "description": "Guestbook app with MySQL, Cloudinary, and User Profiles",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "autosync": "node auto-sync.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
