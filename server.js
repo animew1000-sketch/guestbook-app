@@ -3,6 +3,8 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const mysql = require('mysql2/promise');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 const cloudinary = require('cloudinary');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -15,73 +17,100 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
 
-// 1. Configure MySQL Connection Pool
-const host = process.env.MYSQL_ADDON_HOST || process.env.DB_HOST;
-const user = process.env.MYSQL_ADDON_USER || process.env.DB_USER;
-const password = process.env.MYSQL_ADDON_PASSWORD || process.env.DB_PASSWORD;
-const database = process.env.MYSQL_ADDON_DB || process.env.DB_NAME;
-const port = process.env.MYSQL_ADDON_PORT || process.env.DB_PORT || 3306;
+let isMySQL = false;
+let dbPool; // For MySQL
+let sqliteDb; // For SQLite
 
-if (!host) {
-    console.error('FATAL ERROR: Database host environment variable is missing!');
+// --- UNIFIED QUERY HELPER ---
+// Abstract driver differences so all endpoints use a single query interface
+async function executeQuery(sql, params = []) {
+    if (isMySQL) {
+        const [rows] = await dbPool.query(sql, params);
+        return rows;
+    } else {
+        const trimmedSql = sql.trim().toUpperCase();
+        if (trimmedSql.startsWith('SELECT')) {
+            return await sqliteDb.all(sql, params);
+        } else {
+            const result = await sqliteDb.run(sql, params);
+            return { insertId: result.lastID, affectedRows: result.changes };
+        }
+    }
 }
 
-const pool = mysql.createPool(process.env.MYSQL_URL || {
-    host: host,
-    user: user,
-    password: password,
-    database: database,
-    port: Number(port),
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0,
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 10000
-});
-
-// Initialize Database Tables
+// 1. Initialize Database Connection (MySQL on Cloud / SQLite Locally)
 async function initDb() {
-    try {
-        const connection = await pool.getConnection();
+    const host = process.env.MYSQL_ADDON_HOST || process.env.DB_HOST;
 
-        await connection.query(`
+    if (host) {
+        // --- MYSQL CONFIGURATION (Clever Cloud / Render) ---
+        isMySQL = true;
+        dbPool = mysql.createPool({
+            host: host,
+            user: process.env.MYSQL_ADDON_USER || process.env.DB_USER,
+            password: process.env.MYSQL_ADDON_PASSWORD || process.env.DB_PASSWORD,
+            database: process.env.MYSQL_ADDON_DB || process.env.DB_NAME,
+            port: Number(process.env.MYSQL_ADDON_PORT || process.env.DB_PORT || 3306),
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0,
+            enableKeepAlive: true,
+            keepAliveInitialDelay: 10000
+        });
+        console.log('Using MySQL Database Engine');
+    } else {
+        // --- SQLITE CONFIGURATION (Local Machine File) ---
+        isMySQL = false;
+        sqliteDb = await open({
+            filename: path.join(__dirname, 'database.db'),
+            driver: sqlite3.Database
+        });
+        console.log('Using Local SQLite Database (database.db)');
+    }
+
+    try {
+        // Cross-compatible Table Schemas
+        const autoInc = isMySQL ? 'INT AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        const textType = isMySQL ? 'VARCHAR(255)' : 'TEXT';
+        const ignoreKeyword = isMySQL ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
+
+        await executeQuery(`
             CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                email VARCHAR(255) UNIQUE NOT NULL,
+                id ${autoInc},
+                email ${textType} UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                username VARCHAR(50) UNIQUE NOT NULL,
+                username ${textType} UNIQUE NOT NULL,
                 avatar_url TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
-        await connection.query(`
+        await executeQuery(`
             CREATE TABLE IF NOT EXISTS follows (
                 follower_id INT,
                 following_id INT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (follower_id, following_id),
                 FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
             );
         `);
 
-        await connection.query(`
+        await executeQuery(`
             CREATE TABLE IF NOT EXISTS messages (
-                id INT AUTO_INCREMENT PRIMARY KEY,
+                id ${autoInc},
                 user_id INT,
                 name TEXT,
                 message TEXT,
                 image_url TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
         `);
 
-        connection.release();
-        console.log('MySQL Database tables initialized successfully');
+        console.log('Database tables initialized successfully');
     } catch (err) {
-        console.error('Error creating MySQL database tables:', err);
+        console.error('Database initialization error:', err);
     }
 }
 initDb();
@@ -131,7 +160,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
-        const [result] = await pool.query(
+        const result = await executeQuery(
             'INSERT INTO users (email, password_hash, username) VALUES (?, ?, ?)',
             [email.toLowerCase(), hashedPassword, username.toLowerCase()]
         );
@@ -145,7 +174,7 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     try {
-        const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
+        const rows = await executeQuery('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
         const user = rows[0];
 
         if (!user || !(await bcrypt.compare(password, user.password_hash))) {
@@ -171,8 +200,9 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
     }
 
     try {
-        await pool.query(
-            'INSERT IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)',
+        const ignoreKeyword = isMySQL ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
+        await executeQuery(
+            `${ignoreKeyword} INTO follows (follower_id, following_id) VALUES (?, ?)`,
             [currentUserId, targetUserId]
         );
         res.json({ message: 'Successfully followed user' });
@@ -184,7 +214,7 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
 // Unfollow a User
 app.delete('/api/users/:id/follow', authenticateToken, async (req, res) => {
     try {
-        await pool.query(
+        await executeQuery(
             'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
             [req.user.id, req.params.id]
         );
@@ -205,7 +235,7 @@ app.get('/api/messages', async (req, res) => {
             LEFT JOIN users u ON m.user_id = u.id 
             ORDER BY m.id DESC
         `;
-        const [rows] = await pool.query(query);
+        const rows = await executeQuery(query);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -223,7 +253,7 @@ app.get('/api/feed', authenticateToken, async (req, res) => {
             WHERE f.follower_id = ?
             ORDER BY m.id DESC
         `;
-        const [rows] = await pool.query(query, [req.user.id]);
+        const rows = await executeQuery(query, [req.user.id]);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -236,7 +266,7 @@ app.post('/api/messages', upload.single('image'), async (req, res) => {
     const imageUrl = req.file ? (req.file.path || req.file.secure_url) : null;
 
     try {
-        const [result] = await pool.query(
+        const result = await executeQuery(
             'INSERT INTO messages (name, message, image_url, user_id) VALUES (?, ?, ?, ?)',
             [name, message, imageUrl, userId || null]
         );
@@ -253,7 +283,7 @@ app.delete('/api/messages/:id', async (req, res) => {
     const { userId, name } = req.body;
 
     try {
-        const [rows] = await pool.query('SELECT * FROM messages WHERE id = ?', [messageId]);
+        const rows = await executeQuery('SELECT * FROM messages WHERE id = ?', [messageId]);
         if (rows.length === 0) return res.status(404).json({ error: 'Post not found' });
 
         const msg = rows[0];
@@ -263,7 +293,7 @@ app.delete('/api/messages/:id', async (req, res) => {
             return res.status(403).json({ error: 'You do not have permission to delete this post' });
         }
 
-        await pool.query('DELETE FROM messages WHERE id = ?', [messageId]);
+        await executeQuery('DELETE FROM messages WHERE id = ?', [messageId]);
         res.json({ message: 'Post deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
