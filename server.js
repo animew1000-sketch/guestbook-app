@@ -3,8 +3,6 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const mysql = require('mysql2/promise');
-const sqlite3 = require('sqlite3');
-const { open } = require('sqlite');
 const cloudinary = require('cloudinary');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -59,8 +57,11 @@ async function initDb() {
         });
         console.log('Using MySQL Database Engine');
     } else {
-        // --- SQLITE CONFIGURATION (Local Machine File) ---
+        // --- SQLITE CONFIGURATION (Lazy loaded locally) ---
         isMySQL = false;
+        const sqlite3 = require('sqlite3');
+        const { open } = require('sqlite');
+
         sqliteDb = await open({
             filename: path.join(__dirname, 'database.db'),
             driver: sqlite3.Database
@@ -69,7 +70,7 @@ async function initDb() {
     }
 
     try {
-        // Cross-compatible Table Schemas
+        // Table creation code continues as normal below...
         const autoInc = isMySQL ? 'INT AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
         const textType = isMySQL ? 'VARCHAR(255)' : 'TEXT';
         const ignoreKeyword = isMySQL ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
