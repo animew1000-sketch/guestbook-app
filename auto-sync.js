@@ -3,7 +3,7 @@ const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 
-const SYNC_INTERVAL_MS = 1000; // Polls Clever Cloud every 5 seconds
+const SYNC_INTERVAL_MS = 1000; // Polls Clever Cloud every 1 second
 
 async function syncOnce() {
     let mysqlPool, sqliteDb;
@@ -25,6 +25,37 @@ async function syncOnce() {
             filename: path.join(__dirname, 'database.db'),
             driver: sqlite3.Database
         });
+
+        // 3. Ensure Local SQLite Tables Exist
+        await sqliteDb.exec(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                username TEXT UNIQUE NOT NULL,
+                avatar_url TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS follows (
+                follower_id INT,
+                following_id INT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (follower_id, following_id),
+                FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INT,
+                name TEXT,
+                message TEXT,
+                image_url TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        `);
 
         // --- PULL USERS ---
         const [users] = await mysqlPool.query('SELECT * FROM users');
