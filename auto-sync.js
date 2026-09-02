@@ -64,8 +64,17 @@ async function syncOnce() {
             // Ignored if column user_id already exists
         }
 
-        // --- PULL USERS ---
+        // --- PULL USERS (WITH DELETION SYNC) ---
         const [users] = await mysqlPool.query('SELECT * FROM users');
+        const liveUserIds = users.map(u => u.id);
+
+        if (liveUserIds.length > 0) {
+            const userPlaceholders = liveUserIds.map(() => '?').join(',');
+            await sqliteDb.run(`DELETE FROM users WHERE id NOT IN (${userPlaceholders})`, liveUserIds);
+        } else {
+            await sqliteDb.run(`DELETE FROM users`);
+        }
+
         for (const u of users) {
             await sqliteDb.run(
                 `INSERT INTO users (id, email, password_hash, username, avatar_url, created_at) 
@@ -76,8 +85,10 @@ async function syncOnce() {
             );
         }
 
-        // --- PULL FOLLOWS ---
+        // --- PULL FOLLOWS (WITH DELETION SYNC) ---
         const [follows] = await mysqlPool.query('SELECT * FROM follows');
+        await sqliteDb.run(`DELETE FROM follows`); // Clear existing local relationships to catch any unfollow actions
+
         for (const f of follows) {
             await sqliteDb.run(
                 `INSERT OR IGNORE INTO follows (follower_id, following_id, created_at) VALUES (?, ?, ?)`,
@@ -85,8 +96,17 @@ async function syncOnce() {
             );
         }
 
-        // --- PULL MESSAGES ---
+        // --- PULL MESSAGES (WITH DELETION SYNC) ---
         const [messages] = await mysqlPool.query('SELECT * FROM messages');
+        const liveMsgIds = messages.map(m => m.id);
+
+        if (liveMsgIds.length > 0) {
+            const msgPlaceholders = liveMsgIds.map(() => '?').join(',');
+            await sqliteDb.run(`DELETE FROM messages WHERE id NOT IN (${msgPlaceholders})`, liveMsgIds);
+        } else {
+            await sqliteDb.run(`DELETE FROM messages`);
+        }
+
         for (const m of messages) {
             await sqliteDb.run(
                 `INSERT INTO messages (id, user_id, name, message, image_url, created_at) 
