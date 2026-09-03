@@ -20,16 +20,16 @@ async function syncOnce() {
             connectionLimit: 2
         });
 
-        // 2. Connect to Local XAMPP MySQL
-        xamppPool = mysql.createPool({
-            host: process.env.XAMPP_HOST || 'localhost',
-            user: process.env.XAMPP_USER || 'root',
-            password: process.env.XAMPP_PASSWORD || '', // Default XAMPP password is empty
-            database: process.env.XAMPP_DB || 'guestbook_db',
-            port: Number(process.env.XAMPP_PORT || 3306),
-            waitForConnections: true,
-            connectionLimit: 2
-        });
+       // 2. Connect to Local XAMPP MySQL
+xamppPool = mysql.createPool({
+    host: process.env.XAMPP_HOST || 'localhost',
+    user: process.env.XAMPP_USER || 'root', // Defaults to 'root'
+    password: process.env.XAMPP_PASSWORD || '', // Default XAMPP password is empty
+    database: process.env.XAMPP_DB || 'guestbook_db',
+    port: Number(process.env.XAMPP_PORT || 3306),
+    waitForConnections: true,
+    connectionLimit: 2
+});
 
         // 3. Open Local SQLite Database
         sqliteDb = await open({
