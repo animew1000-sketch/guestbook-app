@@ -1,3 +1,4 @@
+require('dotenv').config(); // Load environment variables from .env
 const mysql = require('mysql2/promise');
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
@@ -9,27 +10,27 @@ async function syncOnce() {
     let cloudPool, xamppPool, sqliteDb;
 
     try {
-        // 1. Connect to Live Clever Cloud MySQL
+        // 1. Connect to Live Clever Cloud MySQL using .env variables
         cloudPool = mysql.createPool({
-            host: process.env.MYSQL_ADDON_HOST,
-            user: process.env.MYSQL_ADDON_USER,
-            password: process.env.MYSQL_ADDON_PASSWORD,
-            database: process.env.MYSQL_ADDON_DB,
-            port: Number(process.env.MYSQL_ADDON_PORT || 3306),
+            host: process.env.CLEVER_HOST || process.env.MYSQL_ADDON_HOST,
+            user: process.env.CLEVER_USER || process.env.MYSQL_ADDON_USER,
+            password: process.env.CLEVER_PASSWORD || process.env.MYSQL_ADDON_PASSWORD,
+            database: process.env.CLEVER_DB || process.env.MYSQL_ADDON_DB,
+            port: Number(process.env.CLEVER_PORT || process.env.MYSQL_ADDON_PORT || 3306),
             waitForConnections: true,
             connectionLimit: 2
         });
 
-       // 2. Connect to Local XAMPP MySQL
-xamppPool = mysql.createPool({
-    host: process.env.XAMPP_HOST || 'localhost',
-    user: process.env.XAMPP_USER || 'root', // Defaults to 'root'
-    password: process.env.XAMPP_PASSWORD || '', // Default XAMPP password is empty
-    database: process.env.XAMPP_DB || 'guestbook_db',
-    port: Number(process.env.XAMPP_PORT || 3306),
-    waitForConnections: true,
-    connectionLimit: 2
-});
+        // 2. Connect to Local XAMPP MySQL using .env variables
+        xamppPool = mysql.createPool({
+            host: process.env.XAMPP_HOST || 'localhost',
+            user: process.env.XAMPP_USER || 'root',
+            password: process.env.XAMPP_PASSWORD || '',
+            database: process.env.XAMPP_DB || 'guestbook_db',
+            port: Number(process.env.XAMPP_PORT || 3306),
+            waitForConnections: true,
+            connectionLimit: 2
+        });
 
         // 3. Open Local SQLite Database
         sqliteDb = await open({
