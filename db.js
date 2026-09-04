@@ -1,12 +1,7 @@
 require('dotenv').config();
 const mysql = require('mysql2/promise');
-const sqlite3 = require('sqlite3');
-const { open } = require('sqlite');
 const path = require('path');
 
-// Automatically detect environment:
-// - On Render (Production): Always use Clever Cloud
-// - On PC (Local): Uses process.env.DB_ENGINE or defaults to 'xampp'
 const engine = process.env.NODE_ENV === 'production' 
     ? 'clevercloud' 
     : (process.env.DB_ENGINE || 'xampp');
@@ -28,6 +23,10 @@ async function getDb() {
         });
         console.log('Active Engine: LOCAL XAMPP MySQL');
     } else if (engine === 'sqlite') {
+        // Dynamically load SQLite only when running locally
+        const sqlite3 = require('sqlite3');
+        const { open } = require('sqlite');
+        
         sqliteDb = await open({
             filename: path.join(__dirname, 'database.db'),
             driver: sqlite3.Database
