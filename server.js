@@ -57,9 +57,12 @@ async function initTables() {
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
             `);
+            
+            // Automatically upgrade image_url column size on MySQL (Clever Cloud / XAMPP)
+            await db.query(`ALTER TABLE messages MODIFY image_url LONGTEXT;`);
         }
     } catch (err) {
-        console.error('Table Init Error:', err.message);
+        console.error('Table Init Notice:', err.message);
     }
 }
 
