@@ -108,7 +108,7 @@ app.post('/api/auth/login', async (req, res) => {
 // Messages Routes
 app.get('/api/messages', async (req, res) => {
     try {
-        const messages = await db.query('SELECT * FROM messages ORDER BY created_at DESC');
+        const messages = await db.query('SELECT * FROM messages ORDER BY created_at DESC', [], req);
         res.json(messages);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -124,7 +124,8 @@ app.post('/api/messages', upload.single('image'), async (req, res) => {
     try {
         const result = await db.query(
             'INSERT INTO messages (user_id, name, message, image_url) VALUES (?, ?, ?, ?)',
-            [userId, name, message, imageUrl]
+            [userId, name, message, imageUrl],
+            req
         );
         res.status(201).json({ success: true, result });
     } catch (err) {
