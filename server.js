@@ -4,7 +4,6 @@ const mysql = require('mysql2/promise');
 const path = require('path');
 const multer = require('multer');
 
-// Configure multer for image uploads (stores files in memory as base64 data URLs)
 const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
@@ -15,7 +14,7 @@ let isMySQL = false;
 let dbPool;
 let sqliteDb;
 
-const engine = process.env.DB_ENGINE || 'clevercloud';
+const engine = process.env.DB_ENGINE || 'xampp';
 
 async function initDb() {
     if (engine === 'clevercloud') {
@@ -174,12 +173,13 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
-// Middleware upload.single('image') handles multipart/form-data from HTML form
 app.post('/api/messages', upload.single('image'), async (req, res) => {
-    const { userId, name, message } = req.body;
-    let imageUrl = null;
+    // Reads userId or user_id depending on how frontend attached it
+    const userId = req.body.userId || req.body.user_id || null;
+    const name = req.body.name || 'Anonymous';
+    const message = req.body.message;
 
-    // Convert uploaded image buffer to base64 Data URL if present
+    let imageUrl = null;
     if (req.file) {
         imageUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
     }
@@ -187,10 +187,12 @@ app.post('/api/messages', upload.single('image'), async (req, res) => {
     try {
         const result = await executeQuery(
             'INSERT INTO messages (user_id, name, message, image_url) VALUES (?, ?, ?, ?)',
-            [userId || null, name, message, imageUrl]
+            [userId, name, message, imageUrl]
         );
+        console.log(`[POST SUCCESS] Saved message from ${name} to XAMPP database.`);
         res.status(201).json({ success: true, result });
     } catch (err) {
+        console.error('Post Error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
