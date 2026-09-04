@@ -1,178 +1,99 @@
 require('dotenv').config();
 const mysql = require('mysql2/promise');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 const path = require('path');
 
-const SYNC_INTERVAL_MS = 1000;
+const engine = process.env.DB_ENGINE || 'clevercloud';
 
-async function syncOnce() {
-    let cloudPool, xamppPool, sqliteDb;
-
+async function sync() {
     try {
-        const sqlite3 = require('sqlite3');
-        const { open } = require('sqlite');
-
-        // 1. Connect to Live Clever Cloud
-        cloudPool = mysql.createPool({
-            host: process.env.CLEVER_HOST || process.env.MYSQL_ADDON_HOST,
-            user: process.env.CLEVER_USER || process.env.MYSQL_ADDON_USER,
-            password: process.env.CLEVER_PASSWORD || process.env.MYSQL_ADDON_PASSWORD,
-            database: process.env.CLEVER_DB || process.env.MYSQL_ADDON_DB,
-            port: Number(process.env.CLEVER_PORT || process.env.MYSQL_ADDON_PORT || 3306),
-            waitForConnections: true,
-            connectionLimit: 2
+        const sqliteDb = await open({ filename: path.join(__dirname, 'database.db'), driver: sqlite3.Database });
+        
+        const cleverPool = mysql.createPool({
+            host: process.env.CLEVER_HOST, user: process.env.CLEVER_USER,
+            password: process.env.CLEVER_PASSWORD, database: process.env.CLEVER_DB,
+            port: Number(process.env.CLEVER_PORT || 3306)
         });
 
-        // 2. Open Local SQLite
-        sqliteDb = await open({
-            filename: path.join(__dirname, 'database.db'),
-            driver: sqlite3.Database
-        });
-
-        await sqliteDb.exec(`
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                username TEXT UNIQUE NOT NULL,
-                avatar_url TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS follows (
-                follower_id INT,
-                following_id INT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (follower_id, following_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INT,
-                name TEXT,
-                message TEXT,
-                image_url TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // Pull live data from Clever Cloud
-        const [users] = await cloudPool.query('SELECT * FROM users');
-        const [follows] = await cloudPool.query('SELECT * FROM follows');
-        const [messages] = await cloudPool.query('SELECT * FROM messages');
-
-        // --- UPDATE SQLITE ---
-        const liveUserIds = users.map(u => u.id);
-        if (liveUserIds.length > 0) {
-            const userPlaceholders = liveUserIds.map(() => '?').join(',');
-            await sqliteDb.run(`DELETE FROM users WHERE id NOT IN (${userPlaceholders})`, liveUserIds);
-        } else {
-            await sqliteDb.run(`DELETE FROM users`);
-        }
-        for (const u of users) {
-            await sqliteDb.run(
-                `INSERT INTO users (id, email, password_hash, username, avatar_url, created_at) 
-                 VALUES (?, ?, ?, ?, ?, ?) 
-                 ON CONFLICT(id) DO UPDATE SET 
-                 email=excluded.email, password_hash=excluded.password_hash, username=excluded.username, avatar_url=excluded.avatar_url`,
-                [u.id, u.email, u.password_hash, u.username, u.avatar_url, u.created_at]
-            );
-        }
-
-        await sqliteDb.run(`DELETE FROM follows`);
-        for (const f of follows) {
-            await sqliteDb.run(
-                `INSERT OR IGNORE INTO follows (follower_id, following_id, created_at) VALUES (?, ?, ?)`,
-                [f.follower_id, f.following_id, f.created_at]
-            );
-        }
-
-        const liveMsgIds = messages.map(m => m.id);
-        if (liveMsgIds.length > 0) {
-            const msgPlaceholders = liveMsgIds.map(() => '?').join(',');
-            await sqliteDb.run(`DELETE FROM messages WHERE id NOT IN (${msgPlaceholders})`, liveMsgIds);
-        } else {
-            await sqliteDb.run(`DELETE FROM messages`);
-        }
-        for (const m of messages) {
-            await sqliteDb.run(
-                `INSERT INTO messages (id, user_id, name, message, image_url, created_at) 
-                 VALUES (?, ?, ?, ?, ?, ?) 
-                 ON CONFLICT(id) DO UPDATE SET 
-                 message=excluded.message, image_url=excluded.image_url, user_id=excluded.user_id`,
-                [m.id, m.user_id, m.name, m.message, m.image_url, m.created_at]
-            );
-        }
-
-        // --- UPDATE XAMPP (Skips silently if XAMPP is offline) ---
-        let xamppSynced = false;
+        let xamppPool;
         try {
             xamppPool = mysql.createPool({
-                host: process.env.XAMPP_HOST || 'localhost',
-                user: process.env.XAMPP_USER || 'root',
-                password: process.env.XAMPP_PASSWORD || '',
-                database: process.env.XAMPP_DB || 'guestbook_db',
-                port: Number(process.env.XAMPP_PORT || 3306),
-                waitForConnections: true,
-                connectionLimit: 2,
-                connectTimeout: 500
+                host: process.env.XAMPP_HOST || 'localhost', user: process.env.XAMPP_USER || 'root',
+                password: process.env.XAMPP_PASSWORD || '', database: process.env.XAMPP_DB || 'guestbook_db',
+                port: Number(process.env.XAMPP_PORT || 3306), connectTimeout: 500
             });
+        } catch (e) {}
 
-            if (liveUserIds.length > 0) {
-                const userPlaceholders = liveUserIds.map(() => '?').join(',');
-                await xamppPool.query(`DELETE FROM users WHERE id NOT IN (${userPlaceholders})`, liveUserIds);
-            } else {
-                await xamppPool.query(`DELETE FROM users`);
-            }
-            for (const u of users) {
-                await xamppPool.query(
-                    `INSERT INTO users (id, email, password_hash, username, avatar_url, created_at) 
-                     VALUES (?, ?, ?, ?, ?, ?) 
-                     ON DUPLICATE KEY UPDATE 
-                     email=VALUES(email), password_hash=VALUES(password_hash), username=VALUES(username), avatar_url=VALUES(avatar_url)`,
-                    [u.id, u.email, u.password_hash, u.username, u.avatar_url, u.created_at]
-                );
-            }
+        // Determine source database
+        let messages = [];
+        if (engine === 'xampp' && xamppPool) {
+            const [rows] = await xamppPool.query('SELECT * FROM messages');
+            messages = rows;
+        } else if (engine === 'sqlite') {
+            messages = await sqliteDb.all('SELECT * FROM messages');
+        } else {
+            const [rows] = await cleverPool.query('SELECT * FROM messages');
+            messages = rows;
+        }
 
-            await xamppPool.query(`DELETE FROM follows`);
-            for (const f of follows) {
-                await xamppPool.query(
-                    `INSERT IGNORE INTO follows (follower_id, following_id, created_at) VALUES (?, ?, ?)`,
-                    [f.follower_id, f.following_id, f.created_at]
-                );
-            }
+        // Mirror data to targets
+        const ids = messages.map(m => m.id);
+        const placeholders = ids.length ? ids.map(() => '?').join(',') : null;
 
-            if (liveMsgIds.length > 0) {
-                const msgPlaceholders = liveMsgIds.map(() => '?').join(',');
-                await xamppPool.query(`DELETE FROM messages WHERE id NOT IN (${msgPlaceholders})`, liveMsgIds);
-            } else {
-                await xamppPool.query(`DELETE FROM messages`);
-            }
+        // Sync SQLite
+        if (engine !== 'sqlite') {
+            if (placeholders) await sqliteDb.run(`DELETE FROM messages WHERE id NOT IN (${placeholders})`, ids);
+            else await sqliteDb.run('DELETE FROM messages');
+
             for (const m of messages) {
-                await xamppPool.query(
-                    `INSERT INTO messages (id, user_id, name, message, image_url, created_at) 
-                     VALUES (?, ?, ?, ?, ?, ?) 
-                     ON DUPLICATE KEY UPDATE 
-                     message=VALUES(message), image_url=VALUES(image_url), user_id=VALUES(user_id)`,
+                await sqliteDb.run(
+                    `INSERT INTO messages (id, user_id, name, message, image_url, created_at) VALUES (?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(id) DO UPDATE SET message=excluded.message, image_url=excluded.image_url`,
                     [m.id, m.user_id, m.name, m.message, m.image_url, m.created_at]
                 );
             }
-            xamppSynced = true;
-        } catch (xErr) {
-            xamppSynced = false;
         }
 
-        const targetStr = xamppSynced ? "SQLite & XAMPP" : "SQLite (XAMPP offline)";
-        console.log(`[${new Date().toLocaleTimeString()}] Synced Clever Cloud -> ${targetStr}.`);
+        // Sync Clever Cloud
+        if (engine !== 'clevercloud') {
+            if (placeholders) await cleverPool.query(`DELETE FROM messages WHERE id NOT IN (${placeholders})`, ids);
+            else await cleverPool.query('DELETE FROM messages');
 
-    } catch (err) {
-        console.error(`[${new Date().toLocaleTimeString()}] Sync error:`, err.message);
-    } finally {
-        if (sqliteDb) await sqliteDb.close();
-        if (cloudPool) await cloudPool.end();
+            for (const m of messages) {
+                await cleverPool.query(
+                    `INSERT INTO messages (id, user_id, name, message, image_url, created_at) VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE message=VALUES(message), image_url=VALUES(image_url)`,
+                    [m.id, m.user_id, m.name, m.message, m.image_url, m.created_at]
+                );
+            }
+        }
+
+        // Sync XAMPP
+        if (engine !== 'xampp' && xamppPool) {
+            try {
+                if (placeholders) await xamppPool.query(`DELETE FROM messages WHERE id NOT IN (${placeholders})`, ids);
+                else await xamppPool.query('DELETE FROM messages');
+
+                for (const m of messages) {
+                    await xamppPool.query(
+                        `INSERT INTO messages (id, user_id, name, message, image_url, created_at) VALUES (?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE message=VALUES(message), image_url=VALUES(image_url)`,
+                        [m.id, m.user_id, m.name, m.message, m.image_url, m.created_at]
+                    );
+                }
+            } catch (xErr) {}
+        }
+
+        console.log(`[${new Date().toLocaleTimeString()}] Mode [${engine.toUpperCase()}]: Databases synced.`);
+
+        await sqliteDb.close();
+        await cleverPool.end();
         if (xamppPool) await xamppPool.end();
+    } catch (err) {
+        console.error('Sync Error:', err.message);
     }
 }
 
-console.log(`Starting continuous Clever Cloud sync...`);
-syncOnce();
-setInterval(syncOnce, SYNC_INTERVAL_MS);
+setInterval(sync, 1000);
+sync();
