@@ -7,8 +7,8 @@ const app = express();
 app.use(express.json());
 
 let isMySQL = false;
-let dbPool;   // Connection pool for Clever Cloud or XAMPP
-let sqliteDb; // Connection for local SQLite
+let dbPool;
+let sqliteDb;
 
 const engine = process.env.DB_ENGINE || 'clevercloud';
 
@@ -25,7 +25,6 @@ async function initDb() {
             connectionLimit: 10
         });
 
-        // Ensure tables exist in MySQL
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -68,7 +67,6 @@ async function initDb() {
             connectionLimit: 10
         });
 
-        // Ensure tables exist in XAMPP MySQL
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -100,17 +98,15 @@ async function initDb() {
         console.log('App connected strictly to LOCAL XAMPP MySQL (Clever Cloud isolated).');
 
     } else {
-        // Dynamic import to prevent Render deployment crash with sqlite3 binaries
         isMySQL = false;
         const sqlite3 = require('sqlite3');
         const { open } = require('sqlite');
-        
+
         sqliteDb = await open({
             filename: path.join(__dirname, 'database.db'),
             driver: sqlite3.Database
         });
 
-        // Ensure tables exist in SQLite
         await sqliteDb.exec(`
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,7 +146,6 @@ async function initDb() {
 }
 initDb();
 
-// Unified query execution helper
 async function executeQuery(sql, params = []) {
     if (isMySQL) {
         const [results] = await dbPool.query(sql, params);
@@ -164,12 +159,8 @@ async function executeQuery(sql, params = []) {
     }
 }
 
-// Serve static frontend files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- API ENDPOINTS ---
-
-// Fetch all messages
 app.get('/api/messages', async (req, res) => {
     try {
         const messages = await executeQuery('SELECT * FROM messages ORDER BY created_at DESC');
@@ -179,7 +170,6 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
-// Create a new message
 app.post('/api/messages', async (req, res) => {
     const { user_id, name, message, image_url } = req.body;
     try {
@@ -193,7 +183,6 @@ app.post('/api/messages', async (req, res) => {
     }
 });
 
-// Delete a message by ID
 app.delete('/api/messages/:id', async (req, res) => {
     const { id } = req.params;
     try {
@@ -204,8 +193,7 @@ app.delete('/api/messages/:id', async (req, res) => {
     }
 });
 
-// Start express server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+    console.log(`Server running on http://localhost:${PORT}`);
 });

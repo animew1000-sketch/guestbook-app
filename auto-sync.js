@@ -1,7 +1,5 @@
 require('dotenv').config();
 const mysql = require('mysql2/promise');
-const sqlite3 = require('sqlite3');
-const { open } = require('sqlite');
 const path = require('path');
 
 const SYNC_INTERVAL_MS = 1000;
@@ -11,6 +9,10 @@ async function syncOnce() {
     let sourcePool, targetXamppPool, sqliteDb;
 
     try {
+        // Dynamic load for SQLite to prevent Render deployment build errors
+        const sqlite3 = require('sqlite3');
+        const { open } = require('sqlite');
+
         // 1. Open Local SQLite Database
         sqliteDb = await open({
             filename: path.join(__dirname, 'database.db'),
@@ -49,9 +51,8 @@ async function syncOnce() {
             await sqliteDb.exec(`ALTER TABLE messages ADD COLUMN user_id INT;`);
         } catch (mErr) {}
 
-        // Determine source database based on active DB_ENGINE setting
+        // Determine source database pool based on active DB_ENGINE setting
         if (activeEngine === 'xampp') {
-            // Source is XAMPP MySQL
             sourcePool = mysql.createPool({
                 host: process.env.XAMPP_HOST || 'localhost',
                 user: process.env.XAMPP_USER || 'root',
@@ -62,7 +63,6 @@ async function syncOnce() {
                 connectionLimit: 2
             });
         } else {
-            // Source is Clever Cloud MySQL
             sourcePool = mysql.createPool({
                 host: process.env.CLEVER_HOST || process.env.MYSQL_ADDON_HOST,
                 user: process.env.CLEVER_USER || process.env.MYSQL_ADDON_USER,
@@ -74,13 +74,13 @@ async function syncOnce() {
             });
         }
 
-        // Pull data from primary source
+        // Pull active source data
         const [users] = await sourcePool.query('SELECT * FROM users');
         const [follows] = await sourcePool.query('SELECT * FROM follows');
         const [messages] = await sourcePool.query('SELECT * FROM messages');
 
         // -------------------------------------------------------------
-        // 1. SYNC TO SQLITE (database.db)
+        // 1. ALWAYS SYNC TO SQLITE (database.db)
         // -------------------------------------------------------------
         const liveUserIds = users.map(u => u.id);
         if (liveUserIds.length > 0) {
@@ -125,7 +125,7 @@ async function syncOnce() {
         }
 
         // -------------------------------------------------------------
-        // 2. SYNC TO XAMPP (Only if Clever Cloud is the active engine)
+        // 2. SYNC TO XAMPP (Only when Clever Cloud is the primary source)
         // -------------------------------------------------------------
         if (activeEngine === 'clevercloud') {
             try {
@@ -182,7 +182,7 @@ async function syncOnce() {
             } catch (xErr) {}
         }
 
-        console.log(`[${new Date().toLocaleTimeString()}] Engine Mode [${activeEngine.toUpperCase()}]: Synced local SQLite.`);
+        console.log(`[${new Date().toLocaleTimeString()}] Mode [${activeEngine.toUpperCase()}]: Synced database successfully.`);
 
     } catch (err) {
         console.error(`[${new Date().toLocaleTimeString()}] Sync error:`, err.message);
