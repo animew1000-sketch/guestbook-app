@@ -1,108 +1,124 @@
+require('dotenv').config();
 const express = require('express');
-const bodyParser = require('body-parser');
-const multer = require('multer');
-const path = require('path');
 const mysql = require('mysql2/promise');
-const cloudinary = require('cloudinary');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-
-// Safe import for CloudinaryStorage across package versions
-const multerCloudinary = require('multer-storage-cloudinary');
-const CloudinaryStorage = multerCloudinary.CloudinaryStorage || multerCloudinary;
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
+const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
+app.use(express.json());
 
 let isMySQL = false;
-let dbPool;   // MySQL connection pool
-let sqliteDb; // SQLite connection
+let dbPool;   // Connection pool for Clever Cloud or XAMPP
+let sqliteDb; // Connection for local SQLite
 
-// --- DUAL WRITE QUERY HELPER ---
-// Automatically writes data to both MySQL and SQLite whenever a write command occurs
-async function executeQuery(sql, params = []) {
-    const trimmedSql = sql.trim().toUpperCase();
-    const isWriteOperation = trimmedSql.startsWith('INSERT') || 
-                             trimmedSql.startsWith('UPDATE') || 
-                             trimmedSql.startsWith('DELETE');
+const engine = process.env.DB_ENGINE || 'sqlite';
 
-    let resultData;
-
-    // 1. Primary Read/Write Execution
-    if (isMySQL) {
-        const [rows] = await dbPool.query(sql, params);
-        resultData = rows;
-    } else {
-        if (trimmedSql.startsWith('SELECT')) {
-            return await sqliteDb.all(sql, params);
-        } else {
-            const result = await sqliteDb.run(sql, params);
-            return { insertId: result.lastID, affectedRows: result.changes };
-        }
-    }
-
-    // 2. Dual-Write Mirroring (If on Cloud MySQL, duplicate write query to local SQLite)
-    if (isMySQL && isWriteOperation && sqliteDb) {
-        const sqliteSql = sql.replace(/INSERT IGNORE/gi, 'INSERT OR IGNORE');
-        sqliteDb.run(sqliteSql, params).catch(err => {
-            console.error('Secondary SQLite Dual-Write Notice:', err.message);
-        });
-    }
-
-    return resultData;
-}
-
-// 1. Initialize Dual Database Connections
 async function initDb() {
-    const host = process.env.MYSQL_ADDON_HOST || process.env.DB_HOST;
-
-    // Always attempt to initialize local SQLite engine for dual-writing/caching
-    try {
-        const sqlite3 = require('sqlite3');
-        const { open } = require('sqlite');
-        sqliteDb = await open({
-            filename: path.join(__dirname, 'database.db'),
-            driver: sqlite3.Database
-        });
-        console.log('Local SQLite engine initialized for dual writing');
-    } catch (err) {
-        console.log('SQLite not loaded (production binary limitation or missing file)');
-    }
-
-    if (host) {
-        // Connected to MySQL in cloud production
+    if (engine === 'clevercloud') {
         isMySQL = true;
         dbPool = mysql.createPool({
-            host: host,
-            user: process.env.MYSQL_ADDON_USER || process.env.DB_USER,
-            password: process.env.MYSQL_ADDON_PASSWORD || process.env.DB_PASSWORD,
-            database: process.env.MYSQL_ADDON_DB || process.env.DB_NAME,
-            port: Number(process.env.MYSQL_ADDON_PORT || process.env.DB_PORT || 3306),
+            host: process.env.CLEVER_HOST || process.env.MYSQL_ADDON_HOST,
+            user: process.env.CLEVER_USER || process.env.MYSQL_ADDON_USER,
+            password: process.env.CLEVER_PASSWORD || process.env.MYSQL_ADDON_PASSWORD,
+            database: process.env.CLEVER_DB || process.env.MYSQL_ADDON_DB,
+            port: Number(process.env.CLEVER_PORT || process.env.MYSQL_ADDON_PORT || 3306),
             waitForConnections: true,
-            connectionLimit: 10,
-            enableKeepAlive: true,
-            keepAliveInitialDelay: 10000
+            connectionLimit: 10
         });
-        console.log('Primary MySQL engine connected');
-    }
 
-    try {
-        const autoInc = isMySQL ? 'INT AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
-        const textType = isMySQL ? 'VARCHAR(255)' : 'TEXT';
-
-        await executeQuery(`
+        // Ensure tables exist in MySQL
+        await dbPool.query(`
             CREATE TABLE IF NOT EXISTS users (
-                id ${autoInc},
-                email ${textType} UNIQUE NOT NULL,
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                username ${textType} UNIQUE NOT NULL,
+                username VARCHAR(255) UNIQUE NOT NULL,
                 avatar_url TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        await dbPool.query(`
+            CREATE TABLE IF NOT EXISTS follows (
+                follower_id INT,
+                following_id INT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (follower_id, following_id)
+            );
+        `);
+        await dbPool.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                name TEXT,
+                message TEXT,
+                image_url TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log('App connected strictly to CLEVER CLOUD MySQL.');
 
-        await executeQuery(`
+    } else if (engine === 'xampp') {
+        isMySQL = true;
+        dbPool = mysql.createPool({
+            host: process.env.XAMPP_HOST || 'localhost',
+            user: process.env.XAMPP_USER || 'root',
+            password: process.env.XAMPP_PASSWORD || '',
+            database: process.env.XAMPP_DB || 'guestbook_db',
+            port: Number(process.env.XAMPP_PORT || 3306),
+            waitForConnections: true,
+            connectionLimit: 10
+        });
+
+        // Ensure tables exist in XAMPP MySQL
+        await dbPool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                avatar_url TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await dbPool.query(`
+            CREATE TABLE IF NOT EXISTS follows (
+                follower_id INT,
+                following_id INT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (follower_id, following_id)
+            );
+        `);
+        await dbPool.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                name TEXT,
+                message TEXT,
+                image_url TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log('App connected strictly to LOCAL XAMPP MySQL (Clever Cloud isolated).');
+
+    } else {
+        isMySQL = false;
+        sqliteDb = await open({
+            filename: path.join(__dirname, 'database.db'),
+            driver: sqlite3.Database
+        });
+
+        // Ensure tables exist in SQLite
+        await sqliteDb.exec(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                username TEXT UNIQUE NOT NULL,
+                avatar_url TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS follows (
                 follower_id INT,
                 following_id INT,
@@ -111,11 +127,9 @@ async function initDb() {
                 FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
             );
-        `);
 
-        await executeQuery(`
             CREATE TABLE IF NOT EXISTS messages (
-                id ${autoInc},
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INT,
                 name TEXT,
                 message TEXT,
@@ -125,203 +139,71 @@ async function initDb() {
             );
         `);
 
-        console.log('Database tables verified and ready across both engines');
-    } catch (err) {
-        console.error('Database initialization error:', err);
+        try {
+            await sqliteDb.exec(`ALTER TABLE messages ADD COLUMN user_id INT;`);
+        } catch (mErr) {}
+
+        console.log('App connected strictly to LOCAL SQLite (database.db).');
     }
 }
 initDb();
 
-// 2. Configure Cloudinary Storage for Multer
-cloudinary.v2.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-const storage = new CloudinaryStorage({
-    cloudinary: cloudinary,
-    params: {
-        folder: 'guestbook_uploads',
-        allowed_formats: ['jpg', 'png', 'jpeg', 'gif', 'webp']
+// Unified query execution helper
+async function executeQuery(sql, params = []) {
+    if (isMySQL) {
+        const [results] = await dbPool.query(sql, params);
+        return results;
+    } else {
+        if (sql.trim().toUpperCase().startsWith('SELECT')) {
+            return await sqliteDb.all(sql, params);
+        } else {
+            return await sqliteDb.run(sql, params);
+        }
     }
-});
-const upload = multer({ storage: storage });
+}
 
-// 3. Middleware
-app.use(bodyParser.json());
+// Serve static frontend files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Authentication Middleware
-const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (!token) return res.status(401).json({ error: 'Access token required' });
+// --- API ENDPOINTS ---
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.status(403).json({ error: 'Invalid or expired token' });
-        req.user = user;
-        next();
-    });
-};
-
-// --- AUTHENTICATION ENDPOINTS ---
-
-// Register New User Profile
-app.post('/api/auth/register', async (req, res) => {
-    const { email, password, username } = req.body;
-    if (!email || !password || !username) {
-        return res.status(400).json({ error: 'Email, password, and username are required' });
-    }
-
-    try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const result = await executeQuery(
-            'INSERT INTO users (email, password_hash, username) VALUES (?, ?, ?)',
-            [email.toLowerCase(), hashedPassword, username.toLowerCase()]
-        );
-        res.status(201).json({ id: result.insertId, email, username });
-    } catch (err) {
-        res.status(400).json({ error: 'Email or username already exists' });
-    }
-});
-
-// Login User
-app.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body;
-    try {
-        const rows = await executeQuery('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
-        const user = rows[0];
-
-        if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-            return res.status(401).json({ error: 'Invalid email or password' });
-        }
-
-        const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-        res.json({ token, user: { id: user.id, email: user.email, username: user.username } });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// --- SOCIAL / FOLLOW ENDPOINTS ---
-
-// Follow a User
-app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
-    const targetUserId = req.params.id;
-    const currentUserId = req.user.id;
-
-    if (parseInt(targetUserId) === currentUserId) {
-        return res.status(400).json({ error: 'You cannot follow yourself' });
-    }
-
-    try {
-        const ignoreKeyword = isMySQL ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
-        await executeQuery(
-            `${ignoreKeyword} INTO follows (follower_id, following_id) VALUES (?, ?)`,
-            [currentUserId, targetUserId]
-        );
-        res.json({ message: 'Successfully followed user' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Unfollow a User
-app.delete('/api/users/:id/follow', authenticateToken, async (req, res) => {
-    try {
-        await executeQuery(
-            'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
-            [req.user.id, req.params.id]
-        );
-        res.json({ message: 'Successfully unfollowed user' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// --- FEED & POST ENDPOINTS ---
-
-// Get Public Feed (All Posts)
+// Fetch all messages
 app.get('/api/messages', async (req, res) => {
     try {
-        const query = `
-            SELECT m.*, u.username, u.avatar_url 
-            FROM messages m 
-            LEFT JOIN users u ON m.user_id = u.id 
-            ORDER BY m.id DESC
-        `;
-        const rows = await executeQuery(query);
-        res.json(rows);
+        const messages = await executeQuery('SELECT * FROM messages ORDER BY created_at DESC');
+        res.json(messages);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Get Following Feed (Posts from users you follow)
-app.get('/api/feed', authenticateToken, async (req, res) => {
-    try {
-        const query = `
-            SELECT m.*, u.username, u.avatar_url 
-            FROM messages m
-            JOIN follows f ON m.user_id = f.following_id
-            JOIN users u ON m.user_id = u.id
-            WHERE f.follower_id = ?
-            ORDER BY m.id DESC
-        `;
-        const rows = await executeQuery(query, [req.user.id]);
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Post a Message with optional Cloudinary Image
-app.post('/api/messages', upload.single('image'), async (req, res) => {
-    const { name, message, userId } = req.body;
-    const imageUrl = req.file ? (req.file.path || req.file.secure_url) : null;
-
+// Create a new message
+app.post('/api/messages', async (req, res) => {
+    const { user_id, name, message, image_url } = req.body;
     try {
         const result = await executeQuery(
-            'INSERT INTO messages (name, message, image_url, user_id) VALUES (?, ?, ?, ?)',
-            [name, message, imageUrl, userId || null]
+            'INSERT INTO messages (user_id, name, message, image_url) VALUES (?, ?, ?, ?)',
+            [user_id || null, name, message, image_url || null]
         );
-        res.json({ id: result.insertId, name, message, image_url: imageUrl, user_id: userId });
+        res.status(201).json({ success: true, result });
     } catch (err) {
-        console.error('Database insertion error:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Delete a Message
+// Delete a message by ID
 app.delete('/api/messages/:id', async (req, res) => {
-    const messageId = req.params.id;
-    const { userId, name } = req.body;
-
+    const { id } = req.params;
     try {
-        const rows = await executeQuery('SELECT * FROM messages WHERE id = ?', [messageId]);
-        if (rows.length === 0) return res.status(404).json({ error: 'Post not found' });
-
-        const msg = rows[0];
-        const isOwner = (userId && msg.user_id === parseInt(userId)) || (name && msg.name === name);
-
-        if (!isOwner) {
-            return res.status(403).json({ error: 'You do not have permission to delete this post' });
-        }
-
-        await executeQuery('DELETE FROM messages WHERE id = ?', [messageId]);
-        res.json({ message: 'Post deleted successfully' });
+        await executeQuery('DELETE FROM messages WHERE id = ?', [id]);
+        res.json({ success: true, message: 'Message deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Catch-all route to serve index.html
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
+// Start express server
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server is running on http://localhost:${PORT}`);
 });
