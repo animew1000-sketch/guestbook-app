@@ -2,9 +2,14 @@ require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql2/promise');
 const path = require('path');
+const multer = require('multer');
+
+// Configure multer for image uploads (stores files in memory as base64 data URLs)
+const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 let isMySQL = false;
 let dbPool;
@@ -49,7 +54,7 @@ async function initDb() {
                 user_id INT,
                 name TEXT,
                 message TEXT,
-                image_url TEXT,
+                image_url LONGTEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         `);
@@ -91,7 +96,7 @@ async function initDb() {
                 user_id INT,
                 name TEXT,
                 message TEXT,
-                image_url TEXT,
+                image_url LONGTEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         `);
@@ -144,7 +149,6 @@ async function initDb() {
         console.log('App connected strictly to LOCAL SQLite (database.db).');
     }
 }
-initDb();
 
 async function executeQuery(sql, params = []) {
     if (isMySQL) {
@@ -170,12 +174,20 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
-app.post('/api/messages', async (req, res) => {
-    const { user_id, name, message, image_url } = req.body;
+// Middleware upload.single('image') handles multipart/form-data from HTML form
+app.post('/api/messages', upload.single('image'), async (req, res) => {
+    const { userId, name, message } = req.body;
+    let imageUrl = null;
+
+    // Convert uploaded image buffer to base64 Data URL if present
+    if (req.file) {
+        imageUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+    }
+
     try {
         const result = await executeQuery(
             'INSERT INTO messages (user_id, name, message, image_url) VALUES (?, ?, ?, ?)',
-            [user_id || null, name, message, image_url || null]
+            [userId || null, name, message, imageUrl]
         );
         res.status(201).json({ success: true, result });
     } catch (err) {
@@ -193,7 +205,17 @@ app.delete('/api/messages/:id', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-});
+async function startServer() {
+    try {
+        await initDb();
+        const PORT = process.env.PORT || 3000;
+        app.listen(PORT, () => {
+            console.log(`Server running on http://localhost:${PORT}`);
+        });
+    } catch (err) {
+        console.error('Failed to initialize database:', err.message);
+        process.exit(1);
+    }
+}
+
+startServer();
