@@ -2,6 +2,7 @@ require('dotenv').config();
 const mysql = require('mysql2/promise');
 const path = require('path');
 
+// On Render (production), lock to clevercloud. Locally, default to xampp.
 const engine = process.env.NODE_ENV === 'production' 
     ? 'clevercloud' 
     : (process.env.DB_ENGINE || 'xampp');

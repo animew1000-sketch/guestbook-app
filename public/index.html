@@ -16,15 +16,12 @@
         body {
             margin: 0;
             font-family: system-ui, -apple-system, sans-serif;
-            
-            /* PNG Background from public/images folder with dark fallback */
             background-color: var(--bg-color);
             background-image: url('https://images.unsplash.com/photo-1546471180-335a013cb87b?q=80&w=1920&auto=format&fit=crop');
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
             background-attachment: fixed;
-            
             color: var(--text);
             min-height: 100vh;
             display: flex;
@@ -67,8 +64,8 @@
         .msg-card { background: rgba(15, 23, 42, 0.5); border-left: 3px solid var(--primary); padding: 12px; border-radius: 6px; position: relative; }
         .msg-header { display: flex; justify-content: space-between; align-items: center; }
         .msg-author { font-weight: bold; font-size: 0.9rem; color: var(--primary); }
-        .msg-text { margin-top: 6px; font-size: 0.95rem; }
-        .msg-img { width: 100%; max-height: 250px; object-fit: cover; border-radius: 6px; margin-top: 8px; display: block; }
+        .msg-text { margin-top: 6px; font-size: 0.95rem; word-break: break-word; }
+        .msg-img { width: 100%; max-height: 250px; object-fit: contain; border-radius: 6px; margin-top: 8px; display: block; background: rgba(0,0,0,0.2); }
         
         .hidden { display: none !important; }
     </style>
@@ -80,13 +77,11 @@
             <h1>Welcome to Anime Social</h1>
         </div>
 
-        <!-- Account Status / Login Section -->
         <div id="authStatus" class="auth-bar">
             <span id="userGreeting">Not logged in</span>
             <button id="authToggleBtn" class="btn-small">Login / Register</button>
         </div>
 
-        <!-- Auth Form -->
         <div id="authFormContainer" class="hidden">
             <div class="tab-buttons">
                 <div id="tabLogin" class="tab-btn active" onclick="switchAuthTab('login')">Login</div>
@@ -101,7 +96,6 @@
             </form>
         </div>
 
-        <!-- Post Form -->
         <form id="dataForm" enctype="multipart/form-data">
             <input type="text" id="name" name="name" placeholder="Your Name or Display Name" required>
             <textarea id="message" name="message" placeholder="Write a public update..." rows="2" required></textarea>
@@ -109,13 +103,11 @@
             <button type="submit" id="submitBtn">Submit Post</button>
         </form>
 
-        <!-- Feed Tabs -->
         <div class="tab-buttons">
             <div id="tabPublic" class="tab-btn active" onclick="switchFeedTab('public')">Public Feed</div>
             <div id="tabFollowing" class="tab-btn" onclick="switchFeedTab('following')">Following Feed</div>
         </div>
 
-        <!-- Message List -->
         <div class="messages" id="messagesList"></div>
     </div>
 
@@ -184,7 +176,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
-                const data = await res.json();
+                
+                const data = await res.json().catch(() => ({ error: 'Server returned invalid response' }));
 
                 if (!res.ok) throw new Error(data.error || 'Authentication failed');
 
@@ -224,7 +217,7 @@
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${authToken}` }
                 });
-                const data = await res.json();
+                const data = await res.json().catch(() => ({ error: 'Action failed' }));
                 if (!res.ok) throw new Error(data.error);
                 alert('Followed user successfully!');
             } catch (err) {
@@ -248,7 +241,7 @@
                     body: JSON.stringify(bodyData)
                 });
 
-                const data = await res.json();
+                const data = await res.json().catch(() => ({ error: 'Failed to delete post' }));
                 if (!res.ok) throw new Error(data.error || 'Failed to delete post');
 
                 fetchMessages();
@@ -297,16 +290,27 @@
 
             try {
                 const formData = new FormData(dataForm);
-                if (currentUser) formData.append('userId', currentUser.id);
+                if (currentUser) {
+                    formData.append('userId', currentUser.id);
+                    formData.append('user_id', currentUser.id);
+                }
 
-                const res = await fetch('/api/messages', { method: 'POST', body: formData });
-                if (!res.ok) throw new Error('Upload failed');
+                const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+
+                const res = await fetch('/api/messages', { 
+                    method: 'POST', 
+                    headers,
+                    body: formData 
+                });
+
+                const data = await res.json().catch(() => null);
+                if (!res.ok) throw new Error(data && data.error ? data.error : 'Upload failed');
 
                 dataForm.reset();
                 if (currentUser) document.getElementById('name').value = currentUser.username;
                 await fetchMessages();
             } catch (err) {
-                alert('Error submitting post.');
+                alert(`Error submitting post: ${err.message}`);
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.innerText = 'Submit Post';
