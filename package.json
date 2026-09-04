@@ -1,4 +1,13 @@
-"dependencies": {
+{
+  "name": "guestbook-app",
+  "version": "1.0.0",
+  "description": "Guestbook app with MySQL, Cloudinary, and User Profiles",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "autosync": "node auto-sync.js"
+  },
+  "dependencies": {
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
     "cloudinary": "^2.11.0",
@@ -9,3 +18,4 @@
     "multer-storage-cloudinary": "^2.2.1",
     "mysql2": "^3.24.3"
   }
+}
