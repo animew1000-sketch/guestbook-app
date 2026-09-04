@@ -1,8 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql2/promise');
-const sqlite3 = require('sqlite3');
-const { open } = require('sqlite');
 const path = require('path');
 
 const app = express();
@@ -12,7 +10,7 @@ let isMySQL = false;
 let dbPool;   // Connection pool for Clever Cloud or XAMPP
 let sqliteDb; // Connection for local SQLite
 
-const engine = process.env.DB_ENGINE || 'sqlite';
+const engine = process.env.DB_ENGINE || 'clevercloud';
 
 async function initDb() {
     if (engine === 'clevercloud') {
@@ -102,7 +100,11 @@ async function initDb() {
         console.log('App connected strictly to LOCAL XAMPP MySQL (Clever Cloud isolated).');
 
     } else {
+        // Dynamic import to prevent Render deployment crash with sqlite3 binaries
         isMySQL = false;
+        const sqlite3 = require('sqlite3');
+        const { open } = require('sqlite');
+        
         sqliteDb = await open({
             filename: path.join(__dirname, 'database.db'),
             driver: sqlite3.Database
