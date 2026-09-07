@@ -1,149 +1,152 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const multer = require('multer');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const session = require('express-session');
 const db = require('./db');
 
-const upload = multer({ storage: multer.memoryStorage() });
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey';
+// --- MIDDLEWARE ---
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Express Session configuration
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'anime_social_secret_key',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 hours
+}));
+
+// Serve static frontend files from /public
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Create required database tables on startup
-async function initTables() {
-    try {
-        const { engine } = await db.getDb();
-        if (engine === 'sqlite') {
-            await db.query(`
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    username TEXT UNIQUE NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INT,
-                    name TEXT,
-                    message TEXT,
-                    image_url TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-            `);
-        } else {
-            await db.query(`
-                CREATE TABLE IF NOT EXISTS users (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    email VARCHAR(255) UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    username VARCHAR(255) UNIQUE NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-            `);
-            await db.query(`
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    user_id INT,
-                    name TEXT,
-                    message TEXT,
-                    image_url LONGTEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-            `);
-            
-            // Automatically upgrade image_url column size on MySQL (Clever Cloud / XAMPP)
-            await db.query(`ALTER TABLE messages MODIFY image_url LONGTEXT;`);
-        }
-    } catch (err) {
-        console.error('Table Init Notice:', err.message);
-    }
-}
+// --- AUTHENTICATION ROUTES ---
 
-// Auth Routes
-app.post('/api/auth/register', async (req, res) => {
-    const { email, password, username } = req.body;
-    if (!email || !password || !username) {
-        return res.status(400).json({ error: 'All fields are required' });
+// 1. Register User
+app.post('/api/register', async (req, res) => {
+    const { username, email, password } = req.body;
+
+    if (!username || !email || !password) {
+        return res.status(400).json({ error: 'All fields are required.' });
     }
 
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
         await db.query(
-            'INSERT INTO users (email, password_hash, username) VALUES (?, ?, ?)',
-            [email, hashedPassword, username]
+            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+            [username, email, hashedPassword]
         );
-        res.status(201).json({ success: true, message: 'User registered successfully' });
+        res.json({ message: 'User registered successfully!' });
     } catch (err) {
-        res.status(400).json({ error: 'Email or username already exists' });
+        console.error('Registration Error:', err.message);
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ error: 'Username or Email already exists.' });
+        }
+        res.status(500).json({ error: 'Database error during registration.' });
     }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+// 2. Login User
+app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password required.' });
+    }
+
     try {
         const users = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-        const user = users[0];
-
-        if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-            return res.status(401).json({ error: 'Invalid email or password' });
+        
+        if (!users || users.length === 0) {
+            return res.status(400).json({ error: 'Invalid email or password.' });
         }
 
-        const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '1d' });
-        res.json({
-            token,
-            user: { id: user.id, email: user.email, username: user.username }
-        });
+        const user = users[0];
+        const match = await bcrypt.compare(password, user.password_hash);
+
+        if (!match) {
+            return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+
+        // Save session
+        req.session.user = {
+            id: user.id,
+            username: user.username,
+            email: user.email
+        };
+
+        res.json({ user: req.session.user });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Login Error:', err.message);
+        res.status(500).json({ error: 'Database error during login.' });
     }
 });
 
-// Messages Routes
+// 3. Get Current User Session
+app.get('/api/me', (req, res) => {
+    if (req.session && req.session.user) {
+        res.json({ user: req.session.user });
+    } else {
+        res.status(401).json({ error: 'Not logged in' });
+    }
+});
+
+// 4. Logout User
+app.post('/api/logout', (req, res) => {
+    req.session.destroy(err => {
+        if (err) return res.status(500).json({ error: 'Failed to logout' });
+        res.json({ message: 'Logged out successfully' });
+    });
+});
+
+// --- MESSAGES / FEED ROUTES ---
+
+// Get Messages
 app.get('/api/messages', async (req, res) => {
     try {
-        const messages = await db.query('SELECT * FROM messages ORDER BY created_at DESC', [], req);
-        res.json(messages);
+        const rows = await db.query('SELECT * FROM messages ORDER BY id DESC');
+        res.json(rows);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Fetch Messages Error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch messages.' });
     }
 });
 
-app.post('/api/messages', upload.single('image'), async (req, res) => {
-    const userId = req.body.userId || req.body.user_id || null;
-    const name = req.body.name || 'Anonymous';
-    const message = req.body.message;
-    let imageUrl = req.file ? `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}` : null;
+// Create Message / Submit Post
+app.post('/api/messages', async (req, res) => {
+    const { name, message, image_url, user_id } = req.body;
+
+    if (!message) {
+        return res.status(400).json({ error: 'Post content is required.' });
+    }
 
     try {
-        const result = await db.query(
+        await db.query(
             'INSERT INTO messages (user_id, name, message, image_url) VALUES (?, ?, ?, ?)',
-            [userId, name, message, imageUrl],
-            req
+            [user_id || null, name || 'Anonymous', message, image_url || null]
         );
-        res.status(201).json({ success: true, result });
+        res.json({ message: 'Post created successfully!' });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Create Message Error:', err.message);
+        res.status(500).json({ error: 'Failed to create post.' });
     }
 });
 
-app.delete('/api/messages/:id', async (req, res) => {
-    try {
-        await db.query('DELETE FROM messages WHERE id = ?', [req.params.id]);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// Fallback to index.html for root requests
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
-    await initTables();
-    console.log(`Server running on http://localhost:${PORT}`);
-});
+// Initialize database connection and start server
+db.getDb()
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`Server running on http://localhost:${PORT}`);
+        });
+    })
+    .catch(err => {
+        console.error('Failed to initialize database connection:', err.message);
+    });
