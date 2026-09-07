@@ -8,16 +8,23 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust reverse proxy (Required for Render)
+app.set('trust proxy', 1);
+
 // --- MIDDLEWARE ---
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Express Session configuration
+// Express Session Configuration
 app.use(session({
     secret: process.env.SESSION_SECRET || 'anime_social_secret_key',
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 hours
+    cookie: { 
+        secure: process.env.NODE_ENV === 'production', 
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        maxAge: 24 * 60 * 60 * 1000 
+    }
 }));
 
 // Serve static frontend files from /public
@@ -104,7 +111,7 @@ app.post('/api/logout', (req, res) => {
 
 // --- MESSAGES / FEED ROUTES ---
 
-// Get Messages
+// 1. Get Messages (Public view)
 app.get('/api/messages', async (req, res) => {
     try {
         const rows = await db.query('SELECT * FROM messages ORDER BY id DESC');
@@ -115,18 +122,25 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
-// Create Message / Submit Post
+// 2. Create Message / Submit Post (REQUIRES LOGIN)
 app.post('/api/messages', async (req, res) => {
-    const { name, message, image_url, user_id } = req.body;
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in or create an account to post.' });
+    }
+
+    const { message, image_url } = req.body;
 
     if (!message) {
         return res.status(400).json({ error: 'Post content is required.' });
     }
 
+    const userId = req.session.user.id;
+    const authorName = req.session.user.username;
+
     try {
         await db.query(
             'INSERT INTO messages (user_id, name, message, image_url) VALUES (?, ?, ?, ?)',
-            [user_id || null, name || 'Anonymous', message, image_url || null]
+            [userId, authorName, message, image_url || null]
         );
         res.json({ message: 'Post created successfully!' });
     } catch (err) {
@@ -135,12 +149,41 @@ app.post('/api/messages', async (req, res) => {
     }
 });
 
-// Fallback to index.html for root requests
+// 3. Delete Message (Owner Only)
+app.delete('/api/messages/:id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must be logged in to delete posts.' });
+    }
+
+    const postId = req.params.id;
+    const userId = req.session.user.id;
+
+    try {
+        const posts = await db.query('SELECT * FROM messages WHERE id = ?', [postId]);
+        if (!posts || posts.length === 0) {
+            return res.status(404).json({ error: 'Post not found.' });
+        }
+
+        const post = posts[0];
+
+        if (!post.user_id || Number(post.user_id) !== Number(userId)) {
+            return res.status(403).json({ error: 'You can only delete your own posts.' });
+        }
+
+        await db.query('DELETE FROM messages WHERE id = ?', [postId]);
+        res.json({ message: 'Post deleted successfully.' });
+    } catch (err) {
+        console.error('Delete Post Error:', err.message);
+        res.status(500).json({ error: 'Database error during deletion.' });
+    }
+});
+
+// Fallback to index.html
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Initialize database connection and start server
+// Start server
 db.getDb()
     .then(() => {
         app.listen(PORT, () => {

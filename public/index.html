@@ -9,13 +9,20 @@
 </head>
 <body>
     <div class="container">
+        <!-- Hero Banner Image -->
+        <div class="banner-container">
+            <a href="https://animepictures.store" target="_blank" rel="noopener noreferrer">
+                <img src="images/banner.svg" alt="Anime Social Banner" class="hero-banner">
+            </a>
+        </div>
+
         <div class="header">
-            <h1>Welcome to Anime Social</h1>
+            <h1><a href="https://animepictures.store" class="site-link">Welcome to Anime Social</a></h1>
         </div>
 
         <div id="auth-bar" class="auth-bar">
             <span id="user-status">Not logged in</span>
-            <button id="auth-btn" class="btn-small" onclick="toggleAuthModal()">Login / Register</button>
+            <button id="auth-btn" class="btn-small" onclick="handleAuthButtonClick()">Login / Register</button>
         </div>
 
         <!-- Auth Section -->
@@ -39,9 +46,15 @@
             </form>
         </div>
 
-        <!-- Create Post Section -->
-        <form id="post-form" onsubmit="handlePostSubmit(event)">
-            <input type="text" id="post-author" placeholder="Your Name or Display Name" required>
+        <!-- Login Prompt Notice for Unauthenticated Users -->
+        <div id="login-notice" class="login-notice-box">
+            <p>Please log in or create an account to share posts in the feed.</p>
+            <button onclick="toggleAuthModal()" class="login-notice-btn">Login / Register</button>
+        </div>
+
+        <!-- Create Post Section (Hidden until logged in) -->
+        <form id="post-form" class="hidden" onsubmit="handlePostSubmit(event)">
+            <input type="text" id="post-author" placeholder="Your Name or Display Name" readonly required>
             <textarea id="post-content" rows="3" placeholder="Write a public update..." required></textarea>
             <input type="file" id="post-image" accept="image/*">
             <button type="submit" id="submit-btn">Submit Post</button>
@@ -62,10 +75,40 @@
         let currentUser = null;
         let currentFeedTab = 'public';
 
-        document.addEventListener('DOMContentLoaded', () => {
-            checkUserSession();
+        document.addEventListener('DOMContentLoaded', async () => {
+            await checkUserSession();
             loadMessages();
         });
+
+        function updateUIState() {
+            const authBtn = document.getElementById('auth-btn');
+            const userStatus = document.getElementById('user-status');
+            const postForm = document.getElementById('post-form');
+            const loginNotice = document.getElementById('login-notice');
+
+            if (currentUser) {
+                if (userStatus) userStatus.innerText = `Logged in as @${currentUser.username}`;
+                if (authBtn) authBtn.innerText = 'Logout';
+                if (postForm) postForm.classList.remove('hidden');
+                if (loginNotice) loginNotice.classList.add('hidden');
+                
+                const authorInput = document.getElementById('post-author');
+                if (authorInput) authorInput.value = currentUser.username;
+            } else {
+                if (userStatus) userStatus.innerText = 'Not logged in';
+                if (authBtn) authBtn.innerText = 'Login / Register';
+                if (postForm) postForm.classList.add('hidden');
+                if (loginNotice) loginNotice.classList.remove('hidden');
+            }
+        }
+
+        function handleAuthButtonClick() {
+            if (currentUser) {
+                handleLogout();
+            } else {
+                toggleAuthModal();
+            }
+        }
 
         function switchFeedTab(tab) {
             currentFeedTab = tab;
@@ -83,13 +126,13 @@
             if (!messagesContainer) return;
 
             try {
-                const response = await fetch(`/api/messages?feed=${currentFeedTab}`);
+                const response = await fetch(`/api/messages?feed=${currentFeedTab}`, { credentials: 'include' });
                 const messages = await response.json();
 
                 messagesContainer.innerHTML = '';
 
                 if (!Array.isArray(messages) || messages.length === 0) {
-                    messagesContainer.innerHTML = `<p style="color: #94a3b8; text-align: center; padding: 20px 0;">No posts in ${currentFeedTab} feed yet.</p>`;
+                    messagesContainer.innerHTML = `<p class="empty-msg">No posts in ${currentFeedTab} feed yet.</p>`;
                     return;
                 }
 
@@ -102,12 +145,20 @@
                         imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
                     }
 
+                    let deleteBtnHtml = '';
+                    if (currentUser && Number(currentUser.id) === Number(msg.user_id)) {
+                        deleteBtnHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
+                    }
+
                     const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
 
                     card.innerHTML = `
                         <div class="msg-header">
                             <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
-                            <span style="font-size: 0.75rem; color: #94a3b8;">${dateStr}</span>
+                            <div class="msg-meta">
+                                <span class="msg-date">${dateStr}</span>
+                                ${deleteBtnHtml}
+                            </div>
                         </div>
                         <div class="msg-text">${escapeHtml(msg.message || '')}</div>
                         ${imageHtml}
@@ -117,14 +168,39 @@
                 });
             } catch (err) {
                 console.error('Error loading messages:', err);
-                messagesContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 20px 0;">Failed to load posts from database.</p>`;
+                messagesContainer.innerHTML = `<p class="error-msg">Failed to load posts from database.</p>`;
+            }
+        }
+
+        async function deletePost(postId) {
+            if (!confirm('Are you sure you want to delete this post?')) return;
+
+            try {
+                const res = await fetch(`/api/messages/${postId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to delete post.');
+                }
+            } catch (err) {
+                console.error('Delete error:', err);
             }
         }
 
         async function handlePostSubmit(event) {
             event.preventDefault();
 
-            const authorInput = document.getElementById('post-author').value;
+            if (!currentUser) {
+                alert('You must log in to submit a post.');
+                toggleAuthModal();
+                return;
+            }
+
             const contentInput = document.getElementById('post-content').value;
             const imageFileInput = document.getElementById('post-image').files[0];
             const submitBtn = document.getElementById('submit-btn');
@@ -138,16 +214,15 @@
             }
 
             const payload = {
-                name: authorInput,
                 message: contentInput,
-                image_url: base64Image,
-                user_id: currentUser ? currentUser.id : null
+                image_url: base64Image
             };
 
             try {
                 const response = await fetch('/api/messages', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify(payload)
                 });
 
@@ -156,7 +231,8 @@
                     document.getElementById('post-image').value = '';
                     loadMessages();
                 } else {
-                    alert('Failed to submit post.');
+                    const data = await response.json();
+                    alert(data.error || 'Failed to submit post.');
                 }
             } catch (err) {
                 console.error('Submit error:', err);
@@ -202,14 +278,14 @@
                 const res = await fetch('/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({ email, password })
                 });
                 const data = await res.json();
 
                 if (res.ok) {
                     currentUser = data.user;
-                    document.getElementById('user-status').innerText = `Logged in as @${currentUser.username}`;
-                    document.getElementById('post-author').value = currentUser.username;
+                    updateUIState();
                     toggleAuthModal();
                     loadMessages();
                 } else {
@@ -230,6 +306,7 @@
                 const res = await fetch('/api/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({ username, email, password })
                 });
                 const data = await res.json();
@@ -245,18 +322,30 @@
             }
         }
 
+        async function handleLogout() {
+            try {
+                await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+                currentUser = null;
+                updateUIState();
+                loadMessages();
+            } catch (err) {
+                console.error('Logout error:', err);
+            }
+        }
+
         async function checkUserSession() {
             try {
-                const res = await fetch('/api/me');
+                const res = await fetch('/api/me', { credentials: 'include' });
                 if (res.ok) {
                     const data = await res.json();
                     currentUser = data.user;
-                    document.getElementById('user-status').innerText = `Logged in as @${currentUser.username}`;
-                    document.getElementById('post-author').value = currentUser.username;
+                } else {
+                    currentUser = null;
                 }
             } catch (e) {
-                // Not logged in
+                currentUser = null;
             }
+            updateUIState();
         }
 
         function escapeHtml(str) {
