@@ -57,6 +57,215 @@
         <div id="messages" class="messages"></div>
     </div>
 
-    <script src="app.js"></script>
+    <!-- Embedded Frontend Logic -->
+    <script>
+        let currentUser = null;
+        let currentFeedTab = 'public';
+
+        document.addEventListener('DOMContentLoaded', () => {
+            checkUserSession();
+            loadMessages();
+        });
+
+        function switchFeedTab(tab) {
+            currentFeedTab = tab;
+            const publicBtn = document.getElementById('tab-public');
+            const followingBtn = document.getElementById('tab-following');
+
+            if (publicBtn) publicBtn.classList.toggle('active', tab === 'public');
+            if (followingBtn) followingBtn.classList.toggle('active', tab === 'following');
+            
+            loadMessages();
+        }
+
+        async function loadMessages() {
+            const messagesContainer = document.getElementById('messages');
+            if (!messagesContainer) return;
+
+            try {
+                const response = await fetch(`/api/messages?feed=${currentFeedTab}`);
+                const messages = await response.json();
+
+                messagesContainer.innerHTML = '';
+
+                if (!Array.isArray(messages) || messages.length === 0) {
+                    messagesContainer.innerHTML = `<p style="color: #94a3b8; text-align: center; padding: 20px 0;">No posts in ${currentFeedTab} feed yet.</p>`;
+                    return;
+                }
+
+                messages.forEach(msg => {
+                    const card = document.createElement('div');
+                    card.className = 'msg-card';
+
+                    let imageHtml = '';
+                    if (msg.image_url) {
+                        imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
+                    }
+
+                    const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
+
+                    card.innerHTML = `
+                        <div class="msg-header">
+                            <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
+                            <span style="font-size: 0.75rem; color: #94a3b8;">${dateStr}</span>
+                        </div>
+                        <div class="msg-text">${escapeHtml(msg.message || '')}</div>
+                        ${imageHtml}
+                    `;
+
+                    messagesContainer.appendChild(card);
+                });
+            } catch (err) {
+                console.error('Error loading messages:', err);
+                messagesContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 20px 0;">Failed to load posts from database.</p>`;
+            }
+        }
+
+        async function handlePostSubmit(event) {
+            event.preventDefault();
+
+            const authorInput = document.getElementById('post-author').value;
+            const contentInput = document.getElementById('post-content').value;
+            const imageFileInput = document.getElementById('post-image').files[0];
+            const submitBtn = document.getElementById('submit-btn');
+
+            submitBtn.disabled = true;
+            submitBtn.innerText = 'Posting...';
+
+            let base64Image = null;
+            if (imageFileInput) {
+                base64Image = await convertFileToBase64(imageFileInput);
+            }
+
+            const payload = {
+                name: authorInput,
+                message: contentInput,
+                image_url: base64Image,
+                user_id: currentUser ? currentUser.id : null
+            };
+
+            try {
+                const response = await fetch('/api/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    document.getElementById('post-content').value = '';
+                    document.getElementById('post-image').value = '';
+                    loadMessages();
+                } else {
+                    alert('Failed to submit post.');
+                }
+            } catch (err) {
+                console.error('Submit error:', err);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerText = 'Submit Post';
+            }
+        }
+
+        function convertFileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = error => reject(error);
+            });
+        }
+
+        function toggleAuthModal() {
+            const authSection = document.getElementById('auth-section');
+            if (authSection) authSection.classList.toggle('hidden');
+        }
+
+        function switchAuthTab(tab) {
+            const loginTab = document.getElementById('tab-login');
+            const regTab = document.getElementById('tab-register');
+            const loginForm = document.getElementById('login-form');
+            const regForm = document.getElementById('register-form');
+
+            if (loginTab) loginTab.classList.toggle('active', tab === 'login');
+            if (regTab) regTab.classList.toggle('active', tab === 'register');
+            
+            if (loginForm) loginForm.classList.toggle('hidden', tab !== 'login');
+            if (regForm) regForm.classList.toggle('hidden', tab !== 'register');
+        }
+
+        async function handleLogin(event) {
+            event.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    currentUser = data.user;
+                    document.getElementById('user-status').innerText = `Logged in as @${currentUser.username}`;
+                    document.getElementById('post-author').value = currentUser.username;
+                    toggleAuthModal();
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Login failed');
+                }
+            } catch (err) {
+                console.error('Login error:', err);
+            }
+        }
+
+        async function handleRegister(event) {
+            event.preventDefault();
+            const username = document.getElementById('reg-username').value;
+            const email = document.getElementById('reg-email').value;
+            const password = document.getElementById('reg-password').value;
+
+            try {
+                const res = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, email, password })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    alert('Registration successful! Please log in.');
+                    switchAuthTab('login');
+                } else {
+                    alert(data.error || 'Registration failed');
+                }
+            } catch (err) {
+                console.error('Register error:', err);
+            }
+        }
+
+        async function checkUserSession() {
+            try {
+                const res = await fetch('/api/me');
+                if (res.ok) {
+                    const data = await res.json();
+                    currentUser = data.user;
+                    document.getElementById('user-status').innerText = `Logged in as @${currentUser.username}`;
+                    document.getElementById('post-author').value = currentUser.username;
+                }
+            } catch (e) {
+                // Not logged in
+            }
+        }
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+    </script>
 </body>
 </html>
