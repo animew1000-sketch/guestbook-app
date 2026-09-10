@@ -8,9 +8,9 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body class="landing-body">
-    <!-- Top-Left Navigation / Auth Button -->
+    <!-- Top-Left Navigation Button -->
     <div class="top-nav">
-        <a href="feed.html" class="nav-btn">Login / Sign Up</a>
+        <a href="auth.html" class="nav-btn">Login / Sign Up</a>
     </div>
 
     <!-- Main Landing Container -->
@@ -78,7 +78,7 @@
 
                 <!-- Interactive SVG Buttons -->
                 <g transform="translate(120, 410)">
-                  <!-- 1. Public Feed Button (Navigates to Feed) -->
+                  <!-- 1. Public Feed Button -->
                   <a href="feed.html?tab=public" style="cursor: pointer; pointer-events: all;">
                     <g>
                       <rect x="0" y="0" width="150" height="42" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
@@ -86,7 +86,7 @@
                     </g>
                   </a>
                   
-                  <!-- 2. Following Feed Button (Navigates to Feed) -->
+                  <!-- 2. Following Feed Button -->
                   <a href="feed.html?tab=following" style="cursor: pointer; pointer-events: all;">
                     <g transform="translate(165, 0)">
                       <rect x="0" y="0" width="160" height="42" rx="8" fill="#1e293b" stroke="#f43f5e" stroke-width="1.5"/>
@@ -94,7 +94,7 @@
                     </g>
                   </a>
 
-                  <!-- 3. Community Button (Opens Posted Users Modal) -->
+                  <!-- 3. Community Button (Opens Users Modal) -->
                   <g onclick="showCommunityUsers()" style="cursor: pointer; pointer-events: all;" transform="translate(340, 0)">
                     <rect x="0" y="0" width="150" height="42" rx="8" fill="#1e293b" stroke="#a855f7" stroke-width="1.5"/>
                     <text x="75" y="26" font-family="'Segoe UI', Roboto, sans-serif" font-size="14" fill="#a855f7" font-weight="600" text-anchor="middle" pointer-events="none"># Community</text>
@@ -104,7 +104,7 @@
             </svg>
         </div>
 
-        <!-- Community Users List Section -->
+        <!-- Community Users Modal Section -->
         <div id="community-section" class="hidden login-notice-box" style="margin-top: 20px;">
             <h3 style="color: #a855f7; margin-bottom: 12px;">Active Community Members</h3>
             <div id="community-users-list" style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 12px;"></div>
@@ -112,7 +112,6 @@
         </div>
     </div>
 
-    <!-- Frontend Script for Community Fetch -->
     <script>
         async function showCommunityUsers() {
             const communitySection = document.getElementById('community-section');
