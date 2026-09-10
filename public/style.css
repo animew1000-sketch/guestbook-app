@@ -10,38 +10,82 @@ body {
     background-color: #0f172a;
     color: #f8fafc;
     min-height: 100vh;
-    padding: 20px;
 }
 
-.container {
-    max-width: 600px;
-    margin: 0 auto;
-    background: rgba(30, 41, 59, 0.7);
-    backdrop-filter: blur(10px);
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 24px;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+/* Landing Page Layout */
+.landing-body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 40px 20px;
 }
 
-/* Banner & Header Styling */
+.top-nav {
+    position: fixed;
+    top: 24px;
+    left: 24px;
+    z-index: 1000;
+}
+
+.nav-btn {
+    display: inline-block;
+    padding: 12px 24px;
+    background: #6366f1;
+    color: #ffffff;
+    text-decoration: none;
+    font-size: 1rem;
+    font-weight: 700;
+    border-radius: 8px;
+    border: 1px solid #818cf8;
+    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+    transition: all 0.2s ease;
+}
+
+.nav-btn:hover {
+    background: #4f46e5;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.6);
+}
+
+/* Landing Page Hero Container */
+.landing-container {
+    width: 100%;
+    max-width: 1200px;
+    margin-top: 40px;
+}
+
 .banner-container {
+    width: 100%;
     text-align: center;
     margin-bottom: 20px;
 }
 
 .hero-banner {
     width: 100%;
-    max-width: 100%;
     height: auto;
-    border-radius: 10px;
+    max-height: 85vh;
+    display: block;
+    border-radius: 16px;
     border: 1px solid #334155;
+    box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.6);
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .hero-banner:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 20px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 25px 50px -10px rgba(99, 102, 241, 0.25);
+}
+
+/* Feed Page Layout & Container */
+.container {
+    max-width: 600px;
+    margin: 40px auto 20px auto;
+    background: rgba(30, 41, 59, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
 }
 
 .header h1 {
@@ -94,7 +138,7 @@ body {
     background: #4f46e5;
 }
 
-/* Feed & Auth Tabs */
+/* Tabs & Button Controls */
 .tab-buttons {
     display: flex;
     gap: 8px;
@@ -202,7 +246,7 @@ button[type="submit"]:disabled {
     background: #4f46e5;
 }
 
-/* Feed Lists & Cards */
+/* Feed Cards & List */
 .messages {
     display: flex;
     flex-direction: column;
