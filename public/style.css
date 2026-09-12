@@ -322,6 +322,7 @@ button[type="submit"]:disabled {
     text-align: center;
     padding: 20px 0;
 }
+
 /* Follow / Unfollow Buttons */
 .btn-follow {
     background: #6366f1;
