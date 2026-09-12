@@ -8,14 +8,11 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Trust reverse proxy (Required for Render)
 app.set('trust proxy', 1);
 
-// --- MIDDLEWARE ---
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Express Session Configuration
 app.use(session({
     secret: process.env.SESSION_SECRET || 'anime_social_secret_key',
     resave: false,
@@ -27,15 +24,12 @@ app.use(session({
     }
 }));
 
-// Serve static frontend files from /public
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- AUTHENTICATION ROUTES ---
 
-// 1. Register User
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
-
     if (!username || !email || !password) {
         return res.status(400).json({ error: 'All fields are required.' });
     }
@@ -48,7 +42,6 @@ app.post('/api/register', async (req, res) => {
         );
         res.json({ message: 'User registered successfully!' });
     } catch (err) {
-        console.error('Registration Error:', err.message);
         if (err.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({ error: 'Username or Email already exists.' });
         }
@@ -56,43 +49,31 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// 2. Login User
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
-
     if (!email || !password) {
         return res.status(400).json({ error: 'Email and password required.' });
     }
 
     try {
         const users = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-        
         if (!users || users.length === 0) {
             return res.status(400).json({ error: 'Invalid email or password.' });
         }
 
         const user = users[0];
         const match = await bcrypt.compare(password, user.password_hash);
-
         if (!match) {
             return res.status(400).json({ error: 'Invalid email or password.' });
         }
 
-        // Save session
-        req.session.user = {
-            id: user.id,
-            username: user.username,
-            email: user.email
-        };
-
+        req.session.user = { id: user.id, username: user.username, email: user.email };
         res.json({ user: req.session.user });
     } catch (err) {
-        console.error('Login Error:', err.message);
         res.status(500).json({ error: 'Database error during login.' });
     }
 });
 
-// 3. Get Current User Session
 app.get('/api/me', (req, res) => {
     if (req.session && req.session.user) {
         res.json({ user: req.session.user });
@@ -101,7 +82,6 @@ app.get('/api/me', (req, res) => {
     }
 });
 
-// 4. Logout User
 app.post('/api/logout', (req, res) => {
     req.session.destroy(err => {
         if (err) return res.status(500).json({ error: 'Failed to logout' });
@@ -109,11 +89,83 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
+// --- FOLLOW / UNFOLLOW ROUTES ---
+
+// Toggle follow/unfollow status for a target user
+app.post('/api/follow/:targetId', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must be logged in to follow users.' });
+    }
+
+    const followerId = req.session.user.id;
+    const followingId = req.params.targetId;
+
+    if (Number(followerId) === Number(followingId)) {
+        return res.status(400).json({ error: 'You cannot follow yourself.' });
+    }
+
+    try {
+        const existing = await db.query(
+            'SELECT * FROM follows WHERE follower_id = ? AND following_id = ?',
+            [followerId, followingId]
+        );
+
+        if (existing && existing.length > 0) {
+            // Unfollow if already following
+            await db.query(
+                'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
+                [followerId, followingId]
+            );
+            return res.json({ following: false, message: 'Unfollowed user successfully.' });
+        } else {
+            // Follow user
+            await db.query(
+                'INSERT INTO follows (follower_id, following_id) VALUES (?, ?)',
+                [followerId, followingId]
+            );
+            return res.json({ following: true, message: 'Followed user successfully.' });
+        }
+    } catch (err) {
+        console.error('Follow Error:', err.message);
+        res.status(500).json({ error: 'Database error handling follow state.' });
+    }
+});
+
+// Get list of user IDs that current user is following
+app.get('/api/following', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.json([]);
+    }
+
+    try {
+        const rows = await db.query('SELECT following_id FROM follows WHERE follower_id = ?', [req.session.user.id]);
+        const followingIds = rows.map(r => r.following_id);
+        res.json(followingIds);
+    } catch (err) {
+        res.status(500).json({ error: 'Database error fetching follows.' });
+    }
+});
+
 // --- MESSAGES / FEED ROUTES ---
 
-// 1. Get Messages (Public view)
 app.get('/api/messages', async (req, res) => {
+    const feedType = req.query.feed || 'public';
+    const currentUserId = (req.session && req.session.user) ? req.session.user.id : null;
+
     try {
+        if (feedType === 'following' && currentUserId) {
+            // Fetch messages posted by followed users
+            const query = `
+                SELECT messages.* FROM messages
+                INNER JOIN follows ON messages.user_id = follows.following_id
+                WHERE follows.follower_id = ?
+                ORDER BY messages.id DESC
+            `;
+            const rows = await db.query(query, [currentUserId]);
+            return res.json(rows);
+        }
+
+        // Public feed: return all messages
         const rows = await db.query('SELECT * FROM messages ORDER BY id DESC');
         res.json(rows);
     } catch (err) {
@@ -122,14 +174,12 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
-// 2. Create Message / Submit Post (REQUIRES LOGIN)
 app.post('/api/messages', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in or create an account to post.' });
     }
 
     const { message, image_url } = req.body;
-
     if (!message) {
         return res.status(400).json({ error: 'Post content is required.' });
     }
@@ -149,7 +199,6 @@ app.post('/api/messages', async (req, res) => {
     }
 });
 
-// 3. Delete Message (Owner Only)
 app.delete('/api/messages/:id', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must be logged in to delete posts.' });
@@ -165,7 +214,6 @@ app.delete('/api/messages/:id', async (req, res) => {
         }
 
         const post = posts[0];
-
         if (!post.user_id || Number(post.user_id) !== Number(userId)) {
             return res.status(403).json({ error: 'You can only delete your own posts.' });
         }
@@ -173,17 +221,14 @@ app.delete('/api/messages/:id', async (req, res) => {
         await db.query('DELETE FROM messages WHERE id = ?', [postId]);
         res.json({ message: 'Post deleted successfully.' });
     } catch (err) {
-        console.error('Delete Post Error:', err.message);
         res.status(500).json({ error: 'Database error during deletion.' });
     }
 });
 
-// Fallback to index.html
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Start server
 db.getDb()
     .then(() => {
         app.listen(PORT, () => {
