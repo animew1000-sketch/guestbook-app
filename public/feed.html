@@ -20,7 +20,7 @@
 
         <!-- Login Notice Banner for Guests -->
         <div id="login-notice" class="login-notice-box">
-            <p>Please log in or create an account to share posts in the feed.</p>
+            <p>Please log in or create an account to share posts and follow users in the feed.</p>
             <a href="auth.html" class="login-notice-btn" style="display: inline-block; text-decoration: none;">Login / Register</a>
         </div>
 
@@ -42,26 +42,25 @@
         <div id="messages" class="messages"></div>
     </div>
 
-    <!-- Embedded Script -->
     <script>
         let currentUser = null;
         let currentFeedTab = 'public';
+        let followingUserIds = [];
 
         document.addEventListener('DOMContentLoaded', async () => {
-            // Read URL query params (e.g. feed.html?tab=following)
             const urlParams = new URLSearchParams(window.location.search);
             const tabParam = urlParams.get('tab');
             if (tabParam === 'following' || tabParam === 'public') {
                 currentFeedTab = tabParam;
             }
 
-            // Sync tab button UI
             const publicBtn = document.getElementById('tab-public');
             const followingBtn = document.getElementById('tab-following');
             if (publicBtn) publicBtn.classList.toggle('active', currentFeedTab === 'public');
             if (followingBtn) followingBtn.classList.toggle('active', currentFeedTab === 'following');
 
             await checkUserSession();
+            await fetchFollowingList();
             loadMessages();
         });
 
@@ -84,6 +83,21 @@
                 if (authBtn) authBtn.innerText = 'Login / Register';
                 if (postForm) postForm.classList.add('hidden');
                 if (loginNotice) loginNotice.classList.remove('hidden');
+            }
+        }
+
+        async function fetchFollowingList() {
+            if (!currentUser) {
+                followingUserIds = [];
+                return;
+            }
+            try {
+                const res = await fetch('/api/following', { credentials: 'include' });
+                if (res.ok) {
+                    followingUserIds = await res.json();
+                }
+            } catch (e) {
+                followingUserIds = [];
             }
         }
 
@@ -130,16 +144,41 @@
                         imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
                     }
 
+                    // Check post ownership
+                    const isOwner = currentUser && (
+                        (msg.user_id && Number(currentUser.id) === Number(msg.user_id)) ||
+                        (currentUser.username === msg.name)
+                    );
+
+                    // Delete button (Owner only)
                     let deleteBtnHtml = '';
-                    if (currentUser && Number(currentUser.id) === Number(msg.user_id)) {
+                    if (isOwner) {
                         deleteBtnHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
+                    }
+
+                    // Follow / Unfollow button
+                    let followBtnHtml = '';
+                    const targetId = msg.user_id;
+
+                    if (currentUser && !isOwner) {
+                        if (targetId) {
+                            const isFollowing = followingUserIds.includes(Number(targetId));
+                            const btnText = isFollowing ? 'Unfollow' : 'Follow';
+                            const btnClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
+                            followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${btnClass}">${btnText}</button>`;
+                        } else if (msg.name) {
+                            followBtnHtml = `<button onclick="toggleFollowByName('${escapeHtml(msg.name)}')" class="btn-follow">Follow</button>`;
+                        }
                     }
 
                     const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
 
                     card.innerHTML = `
                         <div class="msg-header">
-                            <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
+                                ${followBtnHtml}
+                            </div>
                             <div class="msg-meta">
                                 <span class="msg-date">${dateStr}</span>
                                 ${deleteBtnHtml}
@@ -157,6 +196,34 @@
             }
         }
 
+        async function toggleFollow(targetUserId) {
+            if (!currentUser) {
+                window.location.href = 'auth.html';
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/follow/${targetUserId}`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    await fetchFollowingList();
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to update follow state.');
+                }
+            } catch (err) {
+                console.error('Follow error:', err);
+            }
+        }
+
+        function toggleFollowByName(username) {
+            alert(`To follow @${username}, please run the SQL update on the database to map their username to an existing user_id.`);
+        }
+
         async function deletePost(postId) {
             if (!confirm('Are you sure you want to delete this post?')) return;
 
@@ -165,11 +232,10 @@
                     method: 'DELETE',
                     credentials: 'include'
                 });
-                const data = await res.json();
-
                 if (res.ok) {
                     loadMessages();
                 } else {
+                    const data = await res.json();
                     alert(data.error || 'Failed to delete post.');
                 }
             } catch (err) {
@@ -179,7 +245,6 @@
 
         async function handlePostSubmit(event) {
             event.preventDefault();
-
             if (!currentUser) {
                 window.location.href = 'auth.html';
                 return;
@@ -197,17 +262,12 @@
                 base64Image = await convertFileToBase64(imageFileInput);
             }
 
-            const payload = {
-                message: contentInput,
-                image_url: base64Image
-            };
-
             try {
                 const response = await fetch('/api/messages', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify({ message: contentInput, image_url: base64Image })
                 });
 
                 if (response.ok) {
@@ -239,6 +299,7 @@
             try {
                 await fetch('/api/logout', { method: 'POST', credentials: 'include' });
                 currentUser = null;
+                followingUserIds = [];
                 updateUIState();
                 loadMessages();
             } catch (err) {
