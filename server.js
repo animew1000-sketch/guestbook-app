@@ -11,10 +11,8 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Enable reverse proxy trust for HTTPS session cookies on Render/Clever Cloud
 app.set('trust proxy', 1);
 
-// Increase JSON payload limit to accept base64 image strings safely
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
@@ -31,7 +29,6 @@ app.use(session({
     }
 }));
 
-// Session touch middleware to prevent logout drops on failed requests
 app.use((req, res, next) => {
     if (req.session && req.session.user) {
         req.session.touch();
@@ -41,22 +38,26 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Pre-initialize model loading in the background on boot to avoid request blocking
+// Lazy load model ONLY when an image is posted to prevent boot OOM crashes
 let nsfwModel = null;
-nsfw.load('MobileNetV2').then(model => {
-    nsfwModel = model;
-    console.log('NSFW MobileNetV2 model ready for background scans.');
-}).catch(err => console.error('Model load error:', err));
+async function getOrLoadNsfwModel() {
+    if (!nsfwModel) {
+        console.log('Loading NSFW Model into memory...');
+        nsfwModel = await nsfw.load('MobileNetV2');
+    }
+    return nsfwModel;
+}
 
-// Memory-optimized NSFW detection with automatic tensor cleanup
 async function detectExplicitContent(base64Image) {
-    if (!nsfwModel || !base64Image) return false;
+    if (!base64Image) return false;
 
     try {
+        const model = await getOrLoadNsfwModel();
+        if (!model) return false;
+
         const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
         const imageBuffer = Buffer.from(base64Data, 'base64');
         
-        // Fast 128x128 resize reduces CPU classification time to under 100ms
         const { data, info } = await sharp(imageBuffer)
             .resize({ width: 128, height: 128, fit: 'cover' })
             .raw()
@@ -65,7 +66,7 @@ async function detectExplicitContent(base64Image) {
         const predictions = await tf.tidy(() => {
             const imageTensor = tf.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels], 'int32');
             const rgbTensor = info.channels === 4 ? imageTensor.slice([0, 0, 0], [-1, -1, 3]) : imageTensor;
-            return nsfwModel.classify(rgbTensor);
+            return model.classify(rgbTensor);
         });
 
         const scores = {};
