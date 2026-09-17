@@ -301,7 +301,7 @@
                     height = Math.round((height * maxDimension) / width);
                     width = maxDimension;
                 } else {
-                    width = Math.round((width * maxHeight) / height);
+                    width = Math.round((width * maxDimension) / height);
                     height = maxDimension;
                 }
             }
@@ -350,7 +350,7 @@
 
         function applyMemeCanvasToPost() {
             const canvas = document.getElementById('meme-canvas');
-            editedBase64Image = canvas.toDataURL('image/jpeg', 0.85);
+            editedBase64Image = canvas.toDataURL('image/jpeg', 0.65);
             alert('Image edits applied successfully!');
             closeMemeStudio();
         }
@@ -668,17 +668,22 @@
             const is18PlusCheckbox = document.getElementById('post-is-18plus').checked;
             const submitBtn = document.getElementById('submit-btn');
 
-            submitBtn.disabled = true;
-            submitBtn.innerText = 'Posting...';
-
             let base64Image = editedBase64Image;
+
             if (!base64Image && imageFileInput) {
                 try {
+                    submitBtn.innerText = 'Compressing Image...';
                     base64Image = await convertFileToBase64(imageFileInput);
                 } catch (err) {
                     console.error('Error compressing image:', err);
+                    alert('Failed to process image file.');
+                    submitBtn.innerText = 'Submit Post';
+                    return;
                 }
             }
+
+            submitBtn.disabled = true;
+            submitBtn.innerText = 'Posting...';
 
             try {
                 const response = await fetch('/api/messages', {
@@ -703,16 +708,19 @@
                 } else {
                     const data = await response.json();
                     alert(data.error || 'Failed to submit post.');
+                    if (response.status === 401) {
+                        await checkUserSession();
+                    }
                 }
             } catch (err) {
                 console.error('Submit error:', err);
+                alert('Network timeout or connection lost. Please try again.');
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.innerText = 'Submit Post';
             }
         }
 
-        // Automatic Client-Side Image Compression
         function convertFileToBase64(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -724,8 +732,8 @@
                         const canvas = document.createElement('canvas');
                         const ctx = canvas.getContext('2d');
 
-                        const maxWidth = 1024;
-                        const maxHeight = 1024;
+                        const maxWidth = 800;
+                        const maxHeight = 800;
                         let width = img.width;
                         let height = img.height;
 
@@ -743,7 +751,7 @@
                         canvas.height = height;
                         ctx.drawImage(img, 0, 0, width, height);
 
-                        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.75);
+                        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.65);
                         resolve(compressedBase64);
                     };
                     img.onerror = (err) => reject(err);
