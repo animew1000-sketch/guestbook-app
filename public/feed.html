@@ -179,88 +179,86 @@
             loadMessages();
         });
 
-        // --- CLIENT-SIDE NSFW SCANNING ---
+        // --- CLIENT-SIDE NSFW SCANNING (CDN PATH + SKIN PIXEL ANALYSIS) ---
 
         async function scanNsfwOnClient(base64Img) {
-    if (!base64Img) return false;
+            if (!base64Img) return false;
 
-    try {
-        if (!clientNsfwModel) {
-            console.log('Loading client NSFW model...');
-            clientNsfwModel = await nsfwjs.load('MobileNetV2Mid');
-        }
-
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.src = base64Img;
-
-            img.onload = async () => {
-                try {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = 224;
-                    canvas.height = 224;
-                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                    ctx.drawImage(img, 0, 0, 224, 224);
-
-                    // 1. Run Machine Learning Classification
-                    const predictions = await clientNsfwModel.classify(canvas);
-                    console.log('NSFW Predictions:', predictions);
-
-                    const scores = {};
-                    predictions.forEach(p => scores[p.className] = p.probability);
-
-                    const hentai = scores['Hentai'] || 0;
-                    const porn = scores['Porn'] || 0;
-                    const sexy = scores['Sexy'] || 0;
-                    const neutral = scores['Neutral'] || 0;
-                    const drawing = scores['Drawing'] || 0;
-
-                    // Aggregate explicit probabilities
-                    const nonSafeTotal = hentai + porn + sexy;
-
-                    // 2. Perform Skin Pixel Analysis to catch 2D Anime/Real Nudity
-                    const imageData = ctx.getImageData(0, 0, 224, 224).data;
-                    let skinPixelCount = 0;
-                    const totalPixels = 224 * 224;
-
-                    for (let i = 0; i < imageData.length; i += 4) {
-                        const r = imageData[i];
-                        const g = imageData[i + 1];
-                        const b = imageData[i + 2];
-
-                        // RGB skin tone detection for both real and anime color palettes
-                        const isSkin = (
-                            (r > 95 && g > 40 && b > 20 && (Math.max(r, g, b) - Math.min(r, g, b) > 15) && Math.abs(r - g) > 15 && r > g && r > b) ||
-                            (r > 220 && g > 210 && b > 170 && Math.abs(r - g) <= 25 && r > b && g > b) // Pale/Anime skin tones
-                        );
-
-                        if (isSkin) skinPixelCount++;
-                    }
-
-                    const skinRatio = skinPixelCount / totalPixels;
-                    console.log(`Skin ratio detected: ${(skinRatio * 100).toFixed(1)}%`);
-
-                    // 3. Multi-layer Flagging Rules
-                    const isExplicitML = (porn > 0.05 || hentai > 0.05 || sexy > 0.12 || nonSafeTotal > 0.15);
-                    const isExplicitDrawing = (drawing > 0.30 && (hentai > 0.03 || sexy > 0.08 || skinRatio > 0.25));
-                    const isExplicitSkinRatio = (skinRatio > 0.35 && (neutral < 0.80 || nonSafeTotal > 0.08));
-
-                    const finalDecision = isExplicitML || isExplicitDrawing || isExplicitSkinRatio;
-                    resolve(finalDecision);
-                } catch (err) {
-                    console.error('Classification execution error:', err);
-                    resolve(false);
+            try {
+                if (!clientNsfwModel) {
+                    console.log('Loading client NSFW model from CDN...');
+                    clientNsfwModel = await nsfwjs.load('https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/example/nsfw_demo/public/model/');
                 }
-            };
 
-            img.onerror = () => resolve(false);
-        });
-    } catch (err) {
-        console.error('NSFW Scan Error:', err);
-        return false;
-    }
-}
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = base64Img;
+
+                    img.onload = async () => {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = 224;
+                            canvas.height = 224;
+                            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                            ctx.drawImage(img, 0, 0, 224, 224);
+
+                            // 1. Machine Learning Classification
+                            const predictions = await clientNsfwModel.classify(canvas);
+                            console.log('NSFW Predictions:', predictions);
+
+                            const scores = {};
+                            predictions.forEach(p => scores[p.className] = p.probability);
+
+                            const hentai = scores['Hentai'] || 0;
+                            const porn = scores['Porn'] || 0;
+                            const sexy = scores['Sexy'] || 0;
+                            const neutral = scores['Neutral'] || 0;
+                            const drawing = scores['Drawing'] || 0;
+
+                            const nonSafeTotal = hentai + porn + sexy;
+
+                            // 2. Skin Pixel Analysis for Anime/Real Palette
+                            const imageData = ctx.getImageData(0, 0, 224, 224).data;
+                            let skinPixelCount = 0;
+                            const totalPixels = 224 * 224;
+
+                            for (let i = 0; i < imageData.length; i += 4) {
+                                const r = imageData[i];
+                                const g = imageData[i + 1];
+                                const b = imageData[i + 2];
+
+                                const isSkin = (
+                                    (r > 95 && g > 40 && b > 20 && (Math.max(r, g, b) - Math.min(r, g, b) > 15) && Math.abs(r - g) > 15 && r > g && r > b) ||
+                                    (r > 220 && g > 210 && b > 170 && Math.abs(r - g) <= 25 && r > b && g > b)
+                                );
+
+                                if (isSkin) skinPixelCount++;
+                            }
+
+                            const skinRatio = skinPixelCount / totalPixels;
+                            console.log(`Skin ratio detected: ${(skinRatio * 100).toFixed(1)}%`);
+
+                            // 3. Strict Aggregated Rules
+                            const isExplicitML = (porn > 0.05 || hentai > 0.05 || sexy > 0.12 || nonSafeTotal > 0.15);
+                            const isExplicitDrawing = (drawing > 0.30 && (hentai > 0.03 || sexy > 0.08 || skinRatio > 0.25));
+                            const isExplicitSkinRatio = (skinRatio > 0.35 && (neutral < 0.80 || nonSafeTotal > 0.08));
+
+                            const finalDecision = isExplicitML || isExplicitDrawing || isExplicitSkinRatio;
+                            resolve(finalDecision);
+                        } catch (err) {
+                            console.error('Classification execution error:', err);
+                            resolve(false);
+                        }
+                    };
+
+                    img.onerror = () => resolve(false);
+                });
+            } catch (err) {
+                console.error('NSFW Scan Error:', err);
+                return false;
+            }
+        }
 
         // --- PROFILE PICTURE & AVATAR LOGIC ---
 
