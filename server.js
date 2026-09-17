@@ -11,11 +11,12 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Enable reverse proxy trust for HTTPS session cookies on Render
+// Enable reverse proxy trust for HTTPS session cookies on Render/Clever Cloud
 app.set('trust proxy', 1);
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Increase JSON payload limit to accept base64 image strings safely
+app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 app.use(session({
     name: 'anime_social_sid',
@@ -32,7 +33,7 @@ app.use(session({
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Lazy-load MobileNetV2 Model to conserve RAM
+// Lazy-load MobileNetV2 Model to conserve RAM on startup
 let nsfwModel = null;
 async function getOrLoadNsfwModel() {
     if (!nsfwModel) {
@@ -42,7 +43,7 @@ async function getOrLoadNsfwModel() {
     return nsfwModel;
 }
 
-// Memory-optimized NSFW detection
+// Memory-optimized NSFW detection with automatic tensor cleanup
 async function detectExplicitContent(base64Image) {
     if (!base64Image) return false;
     
@@ -53,11 +54,13 @@ async function detectExplicitContent(base64Image) {
         const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
         const imageBuffer = Buffer.from(base64Data, 'base64');
         
+        // Resize down to 224x224 (MobileNetV2 resolution) to keep memory footprint low
         const { data, info } = await sharp(imageBuffer)
             .resize({ width: 224, height: 224, fit: 'cover' })
             .raw()
             .toBuffer({ resolveWithObject: true });
 
+        // Execute inside tf.tidy() for garbage collection of memory tensors
         const predictions = await tf.tidy(() => {
             const imageTensor = tf.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels], 'int32');
             const rgbTensor = info.channels === 4 ? imageTensor.slice([0, 0, 0], [-1, -1, 3]) : imageTensor;
@@ -346,14 +349,18 @@ app.post('/api/messages', async (req, res) => {
 
     let detected18Plus = Boolean(is_18plus);
     if (image_url) {
-        const autoDetected = await detectExplicitContent(image_url);
-        if (autoDetected) {
-            detected18Plus = true;
+        try {
+            const autoDetected = await detectExplicitContent(image_url);
+            if (autoDetected) {
+                detected18Plus = true;
+            }
+        } catch (scanErr) {
+            console.error('NSFW Scan Warning:', scanErr.message);
         }
     }
 
     if (detected18Plus && req.session.user.is_minor) {
-        return res.status(403).json({ error: 'Explicit content detected. Minors are restricted from posting 18+ content.' });
+        return res.status(403).json({ error: 'Explicit content detected. Minors cannot post 18+ content.' });
     }
 
     if (detected18Plus && !req.session.user.age_verified) {
@@ -370,7 +377,8 @@ app.post('/api/messages', async (req, res) => {
         );
         res.json({ message: 'Post created successfully!', is_18plus: detected18Plus });
     } catch (err) {
-        res.status(500).json({ error: 'Failed to create post.' });
+        console.error('Database Error During Message Insert:', err);
+        res.status(500).json({ error: `Failed to save post: ${err.message}` });
     }
 });
 

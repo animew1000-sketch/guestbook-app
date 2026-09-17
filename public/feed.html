@@ -69,7 +69,7 @@
 
     <!-- Avatar Customizer Modal -->
     <div id="avatar-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
-        <div style="background: #1e293b; border: 1px solid #a855f7; padding: 24px; border-radius: 12px; max-width: 400px; width: 100%; text-anchor: center;">
+        <div style="background: #1e293b; border: 1px solid #a855f7; padding: 24px; border-radius: 12px; max-width: 400px; width: 100%; text-align: center;">
             <h3 style="color: #c084fc; margin-bottom: 16px;">Set Profile Picture</h3>
             
             <img id="avatar-modal-preview" src="" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #a855f7; background: #0f172a; margin-bottom: 16px; object-fit: cover;" alt="Preview">
@@ -301,7 +301,7 @@
                     height = Math.round((height * maxDimension) / width);
                     width = maxDimension;
                 } else {
-                    width = Math.round((width * maxDimension) / height);
+                    width = Math.round((width * maxHeight) / height);
                     height = maxDimension;
                 }
             }
@@ -350,7 +350,7 @@
 
         function applyMemeCanvasToPost() {
             const canvas = document.getElementById('meme-canvas');
-            editedBase64Image = canvas.toDataURL('image/jpeg', 0.9);
+            editedBase64Image = canvas.toDataURL('image/jpeg', 0.85);
             alert('Image edits applied successfully!');
             closeMemeStudio();
         }
@@ -673,7 +673,11 @@
 
             let base64Image = editedBase64Image;
             if (!base64Image && imageFileInput) {
-                base64Image = await convertFileToBase64(imageFileInput);
+                try {
+                    base64Image = await convertFileToBase64(imageFileInput);
+                } catch (err) {
+                    console.error('Error compressing image:', err);
+                }
             }
 
             try {
@@ -708,12 +712,43 @@
             }
         }
 
+        // Automatic Client-Side Image Compression
         function convertFileToBase64(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.readAsDataURL(file);
-                reader.onload = () => resolve(reader.result);
-                reader.onerror = error => reject(error);
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+
+                        const maxWidth = 1024;
+                        const maxHeight = 1024;
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > maxWidth || height > maxHeight) {
+                            if (width > height) {
+                                height = Math.round((height * maxWidth) / width);
+                                width = maxWidth;
+                            } else {
+                                width = Math.round((width * maxHeight) / height);
+                                height = maxHeight;
+                            }
+                        }
+
+                        canvas.width = width;
+                        canvas.height = height;
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.75);
+                        resolve(compressedBase64);
+                    };
+                    img.onerror = (err) => reject(err);
+                };
+                reader.onerror = (err) => reject(err);
             });
         }
 
