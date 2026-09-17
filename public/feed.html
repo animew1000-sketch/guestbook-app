@@ -6,6 +6,10 @@
     <title>Anime Social Feed</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="style.css">
+
+    <!-- Client-Side AI Model Libraries (Runs in Browser to Save Server Memory) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -152,6 +156,9 @@
         let selectedOriginalImage = null;
         let editedBase64Image = null;
 
+        // Client-side AI model instance
+        let clientNsfwModel = null;
+
         document.addEventListener('DOMContentLoaded', async () => {
             const urlParams = new URLSearchParams(window.location.search);
             const tabParam = urlParams.get('tab');
@@ -168,6 +175,33 @@
             await fetchFollowingList();
             loadMessages();
         });
+
+        // --- CLIENT-SIDE NSFW SCANNING ---
+
+        async function scanNsfwOnClient(base64Img) {
+            if (!base64Img) return false;
+            try {
+                if (!clientNsfwModel) {
+                    clientNsfwModel = await nsfwjs.load('MobileNetV2Mid');
+                }
+                const imgElement = new Image();
+                imgElement.src = base64Img;
+                await new Promise((resolve) => { imgElement.onload = resolve; });
+
+                const predictions = await clientNsfwModel.classify(imgElement);
+                const scores = {};
+                predictions.forEach(p => scores[p.className] = p.probability);
+
+                const hentai = scores['Hentai'] || 0;
+                const porn = scores['Porn'] || 0;
+                const sexy = scores['Sexy'] || 0;
+
+                return (porn > 0.25 || hentai > 0.20 || sexy > 0.45 || (hentai + porn + sexy) > 0.35);
+            } catch (err) {
+                console.warn('Client-side NSFW scan error:', err);
+                return false;
+            }
+        }
 
         // --- PROFILE PICTURE & AVATAR LOGIC ---
 
@@ -665,7 +699,7 @@
 
             const contentInput = document.getElementById('post-content').value;
             const imageFileInput = document.getElementById('post-image').files[0];
-            const is18PlusCheckbox = document.getElementById('post-is-18plus').checked;
+            let is18PlusCheckbox = document.getElementById('post-is-18plus').checked;
             const submitBtn = document.getElementById('submit-btn');
 
             let base64Image = editedBase64Image;
@@ -679,6 +713,14 @@
                     alert('Failed to process image file.');
                     submitBtn.innerText = 'Submit Post';
                     return;
+                }
+            }
+
+            if (base64Image) {
+                submitBtn.innerText = 'Checking Image Content...';
+                const detectedNsfw = await scanNsfwOnClient(base64Image);
+                if (detectedNsfw) {
+                    is18PlusCheckbox = true;
                 }
             }
 

@@ -3,9 +3,6 @@ const express = require('express');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
-const tf = require('@tensorflow/tfjs');
-const nsfw = require('nsfwjs');
-const sharp = require('sharp');
 const db = require('./db');
 
 const app = express();
@@ -13,8 +10,8 @@ const PORT = process.env.PORT || 10000;
 
 app.set('trust proxy', 1);
 
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use(session({
     name: 'anime_social_sid',
@@ -37,54 +34,6 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Lazy load model ONLY when an image is posted to prevent boot OOM crashes
-let nsfwModel = null;
-async function getOrLoadNsfwModel() {
-    if (!nsfwModel) {
-        console.log('Loading NSFW Model into memory...');
-        nsfwModel = await nsfw.load('MobileNetV2');
-    }
-    return nsfwModel;
-}
-
-async function detectExplicitContent(base64Image) {
-    if (!base64Image) return false;
-
-    try {
-        const model = await getOrLoadNsfwModel();
-        if (!model) return false;
-
-        const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
-        const imageBuffer = Buffer.from(base64Data, 'base64');
-        
-        const { data, info } = await sharp(imageBuffer)
-            .resize({ width: 128, height: 128, fit: 'cover' })
-            .raw()
-            .toBuffer({ resolveWithObject: true });
-
-        const predictions = await tf.tidy(() => {
-            const imageTensor = tf.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels], 'int32');
-            const rgbTensor = info.channels === 4 ? imageTensor.slice([0, 0, 0], [-1, -1, 3]) : imageTensor;
-            return model.classify(rgbTensor);
-        });
-
-        const scores = {};
-        predictions.forEach(pred => {
-            scores[pred.className] = pred.probability;
-        });
-
-        const hentaiScore = scores['Hentai'] || 0;
-        const pornScore = scores['Porn'] || 0;
-        const sexyScore = scores['Sexy'] || 0;
-        const totalExplicitScore = hentaiScore + pornScore + sexyScore;
-
-        return (pornScore > 0.25 || hentaiScore > 0.20 || sexyScore > 0.45 || totalExplicitScore > 0.35);
-    } catch (err) {
-        console.error('NSFW Scanning Error:', err.message);
-        return false;
-    }
-}
 
 function calculateAge(birthdateStr) {
     const today = new Date();
@@ -345,17 +294,7 @@ app.post('/api/messages', async (req, res) => {
         return res.status(400).json({ error: 'Post content is required.' });
     }
 
-    let detected18Plus = Boolean(is_18plus);
-    if (image_url) {
-        try {
-            const autoDetected = await detectExplicitContent(image_url);
-            if (autoDetected) {
-                detected18Plus = true;
-            }
-        } catch (scanErr) {
-            console.error('NSFW Scan Warning:', scanErr.message);
-        }
-    }
+    const detected18Plus = Boolean(is_18plus);
 
     if (detected18Plus && req.session.user.is_minor) {
         return res.status(403).json({ error: 'Explicit content detected. Minors cannot post 18+ content.' });
