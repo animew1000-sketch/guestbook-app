@@ -176,27 +176,47 @@
             loadMessages();
         });
 
-        // --- CLIENT-SIDE NSFW SCANNING ---
+        // --- CLIENT-SIDE NSFW SCANNING (FIXED ASYNC DECODING) ---
 
         async function scanNsfwOnClient(base64Img) {
             if (!base64Img) return false;
             try {
                 if (!clientNsfwModel) {
+                    console.log('Loading client NSFW model...');
                     clientNsfwModel = await nsfwjs.load('MobileNetV2Mid');
                 }
-                const imgElement = new Image();
-                imgElement.src = base64Img;
-                await new Promise((resolve) => { imgElement.onload = resolve; });
 
-                const predictions = await clientNsfwModel.classify(imgElement);
-                const scores = {};
-                predictions.forEach(p => scores[p.className] = p.probability);
+                return new Promise((resolve) => {
+                    const imgElement = new Image();
+                    imgElement.crossOrigin = 'anonymous';
+                    imgElement.src = base64Img;
 
-                const hentai = scores['Hentai'] || 0;
-                const porn = scores['Porn'] || 0;
-                const sexy = scores['Sexy'] || 0;
+                    imgElement.onload = async () => {
+                        try {
+                            const predictions = await clientNsfwModel.classify(imgElement);
+                            console.log('Client NSFW Scan Predictions:', predictions);
 
-                return (porn > 0.25 || hentai > 0.20 || sexy > 0.45 || (hentai + porn + sexy) > 0.35);
+                            const scores = {};
+                            predictions.forEach(p => scores[p.className] = p.probability);
+
+                            const hentai = scores['Hentai'] || 0;
+                            const porn = scores['Porn'] || 0;
+                            const sexy = scores['Sexy'] || 0;
+                            const totalExplicit = hentai + porn + sexy;
+
+                            const isExplicit = (porn > 0.20 || hentai > 0.15 || sexy > 0.35 || totalExplicit > 0.30);
+                            resolve(isExplicit);
+                        } catch (err) {
+                            console.error('Classification execution error:', err);
+                            resolve(false);
+                        }
+                    };
+
+                    imgElement.onerror = (err) => {
+                        console.error('Image load error for NSFW scan:', err);
+                        resolve(false);
+                    };
+                });
             } catch (err) {
                 console.warn('Client-side NSFW scan error:', err);
                 return false;
@@ -690,6 +710,8 @@
             }
         }
 
+        // --- SUBMIT POST HANDLER (WITH STRICT MINOR/18+ BLOCK) ---
+
         async function handlePostSubmit(event) {
             event.preventDefault();
             if (!currentUser) {
@@ -716,11 +738,30 @@
                 }
             }
 
+            // Run Client-Side NSFW Detection
             if (base64Image) {
                 submitBtn.innerText = 'Checking Image Content...';
                 const detectedNsfw = await scanNsfwOnClient(base64Image);
+
                 if (detectedNsfw) {
                     is18PlusCheckbox = true;
+                    document.getElementById('post-is-18plus').checked = true;
+
+                    // Block minor instantly
+                    if (currentUser.is_minor) {
+                        alert('Explicit/18+ content detected in image. Accounts under 18 are not allowed to post mature content.');
+                        submitBtn.disabled = false;
+                        submitBtn.innerText = 'Submit Post';
+                        return;
+                    }
+
+                    // Block unverified adult
+                    if (!currentUser.age_verified) {
+                        alert('Explicit content detected in image. Please verify your age with a birthdate to post 18+ content.');
+                        submitBtn.disabled = false;
+                        submitBtn.innerText = 'Submit Post';
+                        return;
+                    }
                 }
             }
 
