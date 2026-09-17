@@ -9,27 +9,30 @@ const sharp = require('sharp');
 const db = require('./db');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
+// Enable reverse proxy trust for HTTPS session cookies on Render
 app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use(session({
+    name: 'anime_social_sid',
     secret: process.env.SESSION_SECRET || 'anime_social_secret_key',
     resave: false,
     saveUninitialized: false,
     cookie: { 
         secure: process.env.NODE_ENV === 'production', 
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000 
     }
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Lazy-load MobileNetV2 Model to conserve RAM on startup
+// Lazy-load MobileNetV2 Model to conserve RAM
 let nsfwModel = null;
 async function getOrLoadNsfwModel() {
     if (!nsfwModel) {
@@ -39,7 +42,7 @@ async function getOrLoadNsfwModel() {
     return nsfwModel;
 }
 
-// Memory-optimized NSFW detection with auto tensor cleanup
+// Memory-optimized NSFW detection
 async function detectExplicitContent(base64Image) {
     if (!base64Image) return false;
     
@@ -50,13 +53,11 @@ async function detectExplicitContent(base64Image) {
         const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
         const imageBuffer = Buffer.from(base64Data, 'base64');
         
-        // Downscale image to 224x224 (exact size for MobileNetV2) to minimize memory
         const { data, info } = await sharp(imageBuffer)
             .resize({ width: 224, height: 224, fit: 'cover' })
             .raw()
             .toBuffer({ resolveWithObject: true });
 
-        // Wrap tensor operations in tf.tidy() for immediate garbage collection
         const predictions = await tf.tidy(() => {
             const imageTensor = tf.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels], 'int32');
             const rgbTensor = info.channels === 4 ? imageTensor.slice([0, 0, 0], [-1, -1, 3]) : imageTensor;
@@ -170,7 +171,11 @@ app.post('/api/login', async (req, res) => {
             custom_avatar_url: customAvatarUrl,
             avatar_url: buildAvatarUrl(customAvatarUrl, avatarStyle, avatarSeed)
         };
-        res.json({ user: req.session.user });
+        
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+            res.json({ user: req.session.user });
+        });
     } catch (err) {
         res.status(500).json({ error: 'Database error during login.' });
     }
@@ -187,13 +192,14 @@ app.get('/api/me', (req, res) => {
 app.post('/api/logout', (req, res) => {
     req.session.destroy(err => {
         if (err) return res.status(500).json({ error: 'Failed to logout' });
+        res.clearCookie('anime_social_sid');
         res.json({ message: 'Logged out successfully' });
     });
 });
 
 app.post('/api/avatar', async (req, res) => {
     if (!req.session || !req.session.user) {
-        return res.status(401).json({ error: 'Not logged in' });
+        return res.status(401).json({ error: 'You must log in to update profile picture.' });
     }
 
     const { avatar_style, avatar_seed, custom_avatar_url } = req.body;
@@ -212,7 +218,10 @@ app.post('/api/avatar', async (req, res) => {
         req.session.user.custom_avatar_url = customUrl;
         req.session.user.avatar_url = buildAvatarUrl(customUrl, style, seed);
 
-        res.json({ message: 'Profile picture updated!', avatar_url: req.session.user.avatar_url });
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+            res.json({ message: 'Profile picture updated!', avatar_url: req.session.user.avatar_url });
+        });
     } catch (err) {
         res.status(500).json({ error: 'Failed to update profile picture.' });
     }
@@ -243,18 +252,22 @@ app.post('/api/verify-birthdate', async (req, res) => {
         req.session.user.is_minor = isMinor;
         req.session.user.age_verified = ageVerified;
 
-        if (isMinor) {
-            return res.json({ 
-                is_minor: true, 
-                age_verified: false, 
-                message: `Access denied. You are ${age} years old. 18+ content is locked until your 18th birthday.` 
-            });
-        }
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
 
-        res.json({ 
-            is_minor: false, 
-            age_verified: true, 
-            message: 'Birthdate verified! 18+ content access granted.' 
+            if (isMinor) {
+                return res.json({ 
+                    is_minor: true, 
+                    age_verified: false, 
+                    message: `Access denied. You are ${age} years old. 18+ content is locked until your 18th birthday.` 
+                });
+            }
+
+            res.json({ 
+                is_minor: false, 
+                age_verified: true, 
+                message: 'Birthdate verified! 18+ content access granted.' 
+            });
         });
     } catch (err) {
         res.status(500).json({ error: 'Database error storing birthdate.' });
