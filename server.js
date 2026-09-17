@@ -224,6 +224,59 @@ app.post('/api/verify-birthdate', async (req, res) => {
     }
 });
 
+// --- FOLLOW / UNFOLLOW ROUTES ---
+
+app.get('/api/following', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.json([]);
+    }
+    try {
+        const rows = await db.query('SELECT following_id FROM follows WHERE follower_id = ?', [req.session.user.id]);
+        const followingIds = rows.map(r => Number(r.following_id));
+        res.json(followingIds);
+    } catch (err) {
+        console.error('Error fetching following list:', err);
+        res.status(500).json({ error: 'Failed to fetch following list.' });
+    }
+});
+
+app.post('/api/follow/:id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to follow users.' });
+    }
+
+    const followerId = req.session.user.id;
+    const followingId = req.params.id;
+
+    if (Number(followerId) === Number(followingId)) {
+        return res.status(400).json({ error: 'You cannot follow yourself.' });
+    }
+
+    try {
+        const existing = await db.query(
+            'SELECT * FROM follows WHERE follower_id = ? AND following_id = ?',
+            [followerId, followingId]
+        );
+
+        if (existing && existing.length > 0) {
+            await db.query(
+                'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
+                [followerId, followingId]
+            );
+            return res.json({ message: 'Unfollowed user successfully.' });
+        } else {
+            await db.query(
+                'INSERT INTO follows (follower_id, following_id) VALUES (?, ?)',
+                [followerId, followingId]
+            );
+            return res.json({ message: 'Followed user successfully.' });
+        }
+    } catch (err) {
+        console.error('Follow toggle error:', err);
+        res.status(500).json({ error: 'Database error toggling follow status.' });
+    }
+});
+
 // --- MESSAGES & FEEDS ---
 
 app.get('/api/messages', async (req, res) => {
