@@ -3,6 +3,9 @@ const express = require('express');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
+const tf = require('@tensorflow/tfjs');
+const nsfw = require('nsfwjs');
+const sharp = require('sharp');
 const db = require('./db');
 
 const app = express();
@@ -26,6 +29,75 @@ app.use(session({
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Preload NSFWJS Model (InceptionV3)
+let nsfwModel = null;
+async function loadNsfwModel() {
+    try {
+        nsfwModel = await nsfw.load('InceptionV3');
+        console.log('NSFW InceptionV3 AI model loaded successfully.');
+    } catch (err) {
+        console.error('Failed to load NSFW detection model:', err.message);
+    }
+}
+loadNsfwModel();
+
+async function detectExplicitContent(base64Image) {
+    if (!nsfwModel || !base64Image) return false;
+
+    try {
+        const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        
+        const { data, info } = await sharp(imageBuffer)
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+
+        const imageTensor = tf.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels], 'int32');
+        const rgbTensor = info.channels === 4 ? imageTensor.slice([0, 0, 0], [-1, -1, 3]) : imageTensor;
+
+        const predictions = await nsfwModel.classify(rgbTensor);
+        
+        imageTensor.dispose();
+        if (info.channels === 4) rgbTensor.dispose();
+
+        const scores = {};
+        predictions.forEach(pred => {
+            scores[pred.className] = pred.probability;
+        });
+
+        const hentaiScore = scores['Hentai'] || 0;
+        const pornScore = scores['Porn'] || 0;
+        const sexyScore = scores['Sexy'] || 0;
+        const totalExplicitScore = hentaiScore + pornScore + sexyScore;
+
+        if (pornScore > 0.25 || hentaiScore > 0.20 || sexyScore > 0.45 || totalExplicitScore > 0.35) {
+            return true;
+        }
+    } catch (err) {
+        console.error('NSFW Scanning Error:', err.message);
+    }
+    return false;
+}
+
+function calculateAge(birthdateStr) {
+    const today = new Date();
+    const birthDate = new Date(birthdateStr);
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+    
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        age--;
+    }
+    return age;
+}
+
+function buildAvatarUrl(customUrl, style, seed) {
+    if (customUrl) return customUrl;
+    const selectedStyle = style || 'bottts';
+    const selectedSeed = seed || 'default';
+    return `https://api.dicebear.com/7.x/${selectedStyle}/svg?seed=${encodeURIComponent(selectedSeed)}`;
+}
+
 // --- AUTHENTICATION ROUTES ---
 
 app.post('/api/register', async (req, res) => {
@@ -37,8 +109,8 @@ app.post('/api/register', async (req, res) => {
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
         await db.query(
-            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-            [username, email, hashedPassword]
+            'INSERT INTO users (username, email, password_hash, avatar_style, avatar_seed) VALUES (?, ?, ?, ?, ?)',
+            [username, email, hashedPassword, 'bottts', username]
         );
         res.json({ message: 'User registered successfully!' });
     } catch (err) {
@@ -67,7 +139,32 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ error: 'Invalid email or password.' });
         }
 
-        req.session.user = { id: user.id, username: user.username, email: user.email };
+        let isMinor = Boolean(user.is_minor);
+        let ageVerified = Boolean(user.age_verified);
+
+        if (user.birthdate) {
+            const age = calculateAge(user.birthdate);
+            isMinor = age < 18;
+            ageVerified = !isMinor;
+            await db.query('UPDATE users SET is_minor = ?, age_verified = ? WHERE id = ?', [isMinor, ageVerified, user.id]);
+        }
+
+        const avatarStyle = user.avatar_style || 'bottts';
+        const avatarSeed = user.avatar_seed || user.username;
+        const customAvatarUrl = user.custom_avatar_url || null;
+
+        req.session.user = { 
+            id: user.id, 
+            username: user.username, 
+            email: user.email,
+            birthdate: user.birthdate,
+            age_verified: ageVerified,
+            is_minor: isMinor,
+            avatar_style: avatarStyle,
+            avatar_seed: avatarSeed,
+            custom_avatar_url: customAvatarUrl,
+            avatar_url: buildAvatarUrl(customAvatarUrl, avatarStyle, avatarSeed)
+        };
         res.json({ user: req.session.user });
     } catch (err) {
         res.status(500).json({ error: 'Database error during login.' });
@@ -89,99 +186,161 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
-// --- FOLLOW / UNFOLLOW ROUTES ---
-
-// Toggle follow/unfollow status for a target user
-app.post('/api/follow/:targetId', async (req, res) => {
+// Update Avatar or Custom Profile Picture
+app.post('/api/avatar', async (req, res) => {
     if (!req.session || !req.session.user) {
-        return res.status(401).json({ error: 'You must be logged in to follow users.' });
+        return res.status(401).json({ error: 'Not logged in' });
     }
 
-    const followerId = req.session.user.id;
-    const followingId = req.params.targetId;
-
-    if (Number(followerId) === Number(followingId)) {
-        return res.status(400).json({ error: 'You cannot follow yourself.' });
-    }
+    const { avatar_style, avatar_seed, custom_avatar_url } = req.body;
+    const style = avatar_style || 'bottts';
+    const seed = avatar_seed || req.session.user.username;
+    const customUrl = custom_avatar_url || null;
 
     try {
-        const existing = await db.query(
-            'SELECT * FROM follows WHERE follower_id = ? AND following_id = ?',
-            [followerId, followingId]
+        await db.query(
+            'UPDATE users SET avatar_style = ?, avatar_seed = ?, custom_avatar_url = ? WHERE id = ?',
+            [style, seed, customUrl, req.session.user.id]
         );
 
-        if (existing && existing.length > 0) {
-            // Unfollow if already following
-            await db.query(
-                'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
-                [followerId, followingId]
-            );
-            return res.json({ following: false, message: 'Unfollowed user successfully.' });
-        } else {
-            // Follow user
-            await db.query(
-                'INSERT INTO follows (follower_id, following_id) VALUES (?, ?)',
-                [followerId, followingId]
-            );
-            return res.json({ following: true, message: 'Followed user successfully.' });
-        }
+        req.session.user.avatar_style = style;
+        req.session.user.avatar_seed = seed;
+        req.session.user.custom_avatar_url = customUrl;
+        req.session.user.avatar_url = buildAvatarUrl(customUrl, style, seed);
+
+        res.json({ message: 'Profile picture updated!', avatar_url: req.session.user.avatar_url });
     } catch (err) {
-        console.error('Follow Error:', err.message);
-        res.status(500).json({ error: 'Database error handling follow state.' });
+        res.status(500).json({ error: 'Failed to update profile picture.' });
     }
 });
 
-// Get list of user IDs that current user is following
-app.get('/api/following', async (req, res) => {
+app.post('/api/verify-birthdate', async (req, res) => {
     if (!req.session || !req.session.user) {
-        return res.json([]);
+        return res.status(401).json({ error: 'You must be logged in.' });
     }
+
+    const { birthdate } = req.body;
+    if (!birthdate) {
+        return res.status(400).json({ error: 'Birthdate is required.' });
+    }
+
+    const age = calculateAge(birthdate);
+    const isMinor = age < 18;
+    const ageVerified = !isMinor;
+    const userId = req.session.user.id;
 
     try {
-        const rows = await db.query('SELECT following_id FROM follows WHERE follower_id = ?', [req.session.user.id]);
-        const followingIds = rows.map(r => r.following_id);
-        res.json(followingIds);
+        await db.query(
+            'UPDATE users SET birthdate = ?, is_minor = ?, age_verified = ? WHERE id = ?',
+            [birthdate, isMinor, ageVerified, userId]
+        );
+
+        req.session.user.birthdate = birthdate;
+        req.session.user.is_minor = isMinor;
+        req.session.user.age_verified = ageVerified;
+
+        if (isMinor) {
+            return res.json({ 
+                is_minor: true, 
+                age_verified: false, 
+                message: `Access denied. You are ${age} years old. 18+ content is locked until your 18th birthday.` 
+            });
+        }
+
+        res.json({ 
+            is_minor: false, 
+            age_verified: true, 
+            message: 'Birthdate verified! 18+ content access granted.' 
+        });
     } catch (err) {
-        res.status(500).json({ error: 'Database error fetching follows.' });
+        res.status(500).json({ error: 'Database error storing birthdate.' });
     }
 });
 
-// --- MESSAGES / FEED ROUTES ---
+// --- MESSAGES & FEEDS ---
 
 app.get('/api/messages', async (req, res) => {
     const feedType = req.query.feed || 'public';
+    let show18Plus = req.query.show18plus === 'true';
     const currentUserId = (req.session && req.session.user) ? req.session.user.id : null;
 
+    if (req.session && req.session.user && req.session.user.is_minor) {
+        show18Plus = false;
+    }
+
     try {
+        let query = '';
+        let params = [];
+
         if (feedType === 'following' && currentUserId) {
-            // Fetch messages posted by followed users
-            const query = `
-                SELECT messages.* FROM messages
+            query = `
+                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url 
+                FROM messages
                 INNER JOIN follows ON messages.user_id = follows.following_id
+                LEFT JOIN users ON messages.user_id = users.id
                 WHERE follows.follower_id = ?
-                ORDER BY messages.id DESC
             `;
-            const rows = await db.query(query, [currentUserId]);
-            return res.json(rows);
+            params.push(currentUserId);
+
+            if (!show18Plus) {
+                query += ' AND (messages.is_18plus IS FALSE OR messages.is_18plus IS NULL)';
+            }
+            query += ' ORDER BY messages.id DESC';
+        } else {
+            query = `
+                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url 
+                FROM messages 
+                LEFT JOIN users ON messages.user_id = users.id 
+                WHERE 1=1
+            `;
+            if (!show18Plus) {
+                query += ' AND (messages.is_18plus IS FALSE OR messages.is_18plus IS NULL)';
+            }
+            query += ' ORDER BY messages.id DESC';
         }
 
-        // Public feed: return all messages
-        const rows = await db.query('SELECT * FROM messages ORDER BY id DESC');
-        res.json(rows);
+        const rows = await db.query(query, params);
+
+        const rowsWithAvatars = rows.map(r => ({
+            ...r,
+            avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.name)
+        }));
+
+        res.json(rowsWithAvatars);
     } catch (err) {
-        console.error('Fetch Messages Error:', err.message);
+        console.error(err);
         res.status(500).json({ error: 'Failed to fetch messages.' });
     }
 });
 
 app.post('/api/messages', async (req, res) => {
     if (!req.session || !req.session.user) {
-        return res.status(401).json({ error: 'You must log in or create an account to post.' });
+        return res.status(401).json({ error: 'You must log in to post.' });
     }
 
-    const { message, image_url } = req.body;
+    if (req.session.user.is_minor) {
+        req.body.is_18plus = false;
+    }
+
+    const { message, image_url, is_18plus } = req.body;
     if (!message) {
         return res.status(400).json({ error: 'Post content is required.' });
+    }
+
+    let detected18Plus = Boolean(is_18plus);
+    if (image_url) {
+        const autoDetected = await detectExplicitContent(image_url);
+        if (autoDetected) {
+            detected18Plus = true;
+        }
+    }
+
+    if (detected18Plus && req.session.user.is_minor) {
+        return res.status(403).json({ error: 'Explicit content detected. Minors are restricted from posting 18+ content.' });
+    }
+
+    if (detected18Plus && !req.session.user.age_verified) {
+        return res.status(403).json({ error: 'Explicit content detected. Please verify your age with a birthdate to proceed.' });
     }
 
     const userId = req.session.user.id;
@@ -189,12 +348,11 @@ app.post('/api/messages', async (req, res) => {
 
     try {
         await db.query(
-            'INSERT INTO messages (user_id, name, message, image_url) VALUES (?, ?, ?, ?)',
-            [userId, authorName, message, image_url || null]
+            'INSERT INTO messages (user_id, name, message, image_url, is_18plus) VALUES (?, ?, ?, ?, ?)',
+            [userId, authorName, message, image_url || null, detected18Plus]
         );
-        res.json({ message: 'Post created successfully!' });
+        res.json({ message: 'Post created successfully!', is_18plus: detected18Plus });
     } catch (err) {
-        console.error('Create Message Error:', err.message);
         res.status(500).json({ error: 'Failed to create post.' });
     }
 });

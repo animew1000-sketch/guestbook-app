@@ -14,11 +14,26 @@
         </div>
 
         <div id="auth-bar" class="auth-bar">
-            <span id="user-status">Not logged in</span>
-            <button id="auth-btn" class="btn-small" onclick="handleAuthButtonClick()">Login / Register</button>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <img id="user-avatar-preview" src="https://api.dicebear.com/7.x/bottts/svg?seed=guest" style="width: 36px; height: 36px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
+                <span id="user-status">Not logged in</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button id="avatar-btn" class="btn-small hidden" style="background: #a855f7;" onclick="openAvatarModal()">Edit Profile Picture</button>
+                <button id="auth-btn" class="btn-small" onclick="handleAuthButtonClick()">Login / Register</button>
+            </div>
         </div>
 
-        <!-- Login Notice Banner for Guests -->
+        <!-- 18+ Filter Control -->
+        <div class="auth-bar" style="background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; margin-bottom: 16px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #f43f5e; font-weight: 600;">
+                <input type="checkbox" id="nsfw-toggle" onchange="handleNsfwToggleChange(this)">
+                Show 18+ Content
+            </label>
+            <span id="nsfw-status-badge" style="font-size: 0.75rem; color: #94a3b8;">(18+ Hidden)</span>
+        </div>
+
+        <!-- Login Notice Banner -->
         <div id="login-notice" class="login-notice-box">
             <p>Please log in or create an account to share posts and follow users in the feed.</p>
             <a href="auth.html" class="login-notice-btn" style="display: inline-block; text-decoration: none;">Login / Register</a>
@@ -28,7 +43,17 @@
         <form id="post-form" class="hidden" onsubmit="handlePostSubmit(event)">
             <input type="text" id="post-author" placeholder="Your Name or Display Name" readonly required>
             <textarea id="post-content" rows="3" placeholder="Write a public update..." required></textarea>
-            <input type="file" id="post-image" accept="image/*">
+            
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="file" id="post-image" accept="image/*" onchange="handleImageSelect(event)">
+                <button type="button" id="meme-studio-btn" class="btn-small hidden" style="background: #a855f7; white-space: nowrap;" onclick="openMemeStudio()">✨ Open Image Studio</button>
+            </div>
+            
+            <label id="post-18plus-wrapper" style="display: flex; align-items: center; gap: 8px; color: #f43f5e; font-size: 0.85rem; cursor: pointer;">
+                <input type="checkbox" id="post-is-18plus">
+                Mark as 18+ / Mature Content
+            </label>
+
             <button type="submit" id="submit-btn">Submit Post</button>
         </form>
 
@@ -42,10 +67,93 @@
         <div id="messages" class="messages"></div>
     </div>
 
+    <!-- Avatar Customizer Modal -->
+    <div id="avatar-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
+        <div style="background: #1e293b; border: 1px solid #a855f7; padding: 24px; border-radius: 12px; max-width: 400px; width: 100%; text-align: center;">
+            <h3 style="color: #c084fc; margin-bottom: 16px;">Set Profile Picture</h3>
+            
+            <img id="avatar-modal-preview" src="" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #a855f7; background: #0f172a; margin-bottom: 16px; object-fit: cover;" alt="Preview">
+            
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; text-align: left;">
+                <label style="color: #c084fc; font-size: 0.8rem; font-weight: 600;">Option 1: Upload Custom Photo</label>
+                <input type="file" id="custom-avatar-file" accept="image/*" onchange="handleCustomAvatarSelect(event)" style="padding: 6px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.8rem;">
+                <button type="button" id="clear-custom-avatar-btn" class="btn-small hidden" style="background: #ef4444; margin-top: -4px;" onclick="clearCustomAvatarUpload()">Clear Custom Photo</button>
+
+                <hr style="border-color: #334155; margin: 6px 0;">
+
+                <label style="color: #818cf8; font-size: 0.8rem; font-weight: 600;">Option 2: Generate Avatar</label>
+                <select id="avatar-style-select" onchange="updateAvatarModalPreview()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                    <option value="bottts">Cyberpunk Bottts</option>
+                    <option value="adventurer">Anime Adventurer</option>
+                    <option value="pixel-art">Pixel Art Avatar</option>
+                    <option value="lorelei">Anime Lorelei</option>
+                </select>
+                <input type="text" id="avatar-seed-input" placeholder="Avatar Seed / Name" oninput="updateAvatarModalPreview()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+            </div>
+
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button onclick="saveAvatarSelection()" style="padding: 8px 16px; background: #a855f7; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Save Profile Picture</button>
+                <button onclick="closeAvatarModal()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Studio / Meme Creator Modal -->
+    <div id="meme-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.9); display: flex; justify-content: center; align-items: center; z-index: 2000; padding: 20px;">
+        <div style="background: #1e293b; border: 1px solid #818cf8; padding: 20px; border-radius: 12px; max-width: 500px; width: 100%; text-align: center;">
+            <h3 style="color: #818cf8; margin-bottom: 12px;">Image Studio & Meme Creator</h3>
+            
+            <canvas id="meme-canvas" style="max-width: 100%; height: auto; border: 1px solid #334155; border-radius: 6px; background: #0f172a; margin-bottom: 12px;"></canvas>
+
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+                <input type="text" id="meme-top-text" placeholder="Top Text" oninput="renderMemeCanvas()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                <input type="text" id="meme-bottom-text" placeholder="Bottom Text" oninput="renderMemeCanvas()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                
+                <select id="meme-filter-select" onchange="renderMemeCanvas()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                    <option value="none">Filter: Normal</option>
+                    <option value="cyberpunk">Filter: Cyberpunk Glow</option>
+                    <option value="grayscale">Filter: Monochrome</option>
+                    <option value="invert">Filter: Inverted Neon</option>
+                </select>
+            </div>
+
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button onclick="applyMemeCanvasToPost()" style="padding: 8px 16px; background: #6366f1; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Apply Image Edits</button>
+                <button onclick="closeMemeStudio()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Birthdate Verification Modal -->
+    <div id="age-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
+        <div style="background: #1e293b; border: 1px solid #f43f5e; padding: 24px; border-radius: 12px; max-width: 420px; text-align: center;">
+            <h2 style="color: #f43f5e; margin-bottom: 12px;">Date of Birth Required</h2>
+            <p style="color: #cbd5e1; font-size: 0.9rem; margin-bottom: 16px;">
+                To enable 18+ content, please enter your date of birth. This will be saved to your profile and locked if you are under 18.
+            </p>
+            
+            <form onsubmit="submitBirthdateVerification(event)" style="margin-bottom: 0;">
+                <input type="date" id="birthdate-input" required style="margin-bottom: 16px; padding: 10px; background: #0f172a; border: 1px solid #f43f5e; color: #fff; border-radius: 6px;">
+                <div style="display: flex; gap: 12px; justify-content: center;">
+                    <button type="submit" style="padding: 8px 16px; background: #f43f5e; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Verify Date</button>
+                    <button type="button" onclick="cancelAgeVerification()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         let currentUser = null;
         let currentFeedTab = 'public';
         let followingUserIds = [];
+        let show18Plus = localStorage.getItem('show18Plus') === 'true';
+
+        // Avatar Customizer State
+        let pendingCustomAvatarBase64 = null;
+
+        // Meme Canvas State
+        let selectedOriginalImage = null;
+        let editedBase64Image = null;
 
         document.addEventListener('DOMContentLoaded', async () => {
             const urlParams = new URLSearchParams(window.location.search);
@@ -64,26 +172,334 @@
             loadMessages();
         });
 
+        // --- PROFILE PICTURE & AVATAR LOGIC ---
+
+        function openAvatarModal() {
+            if (!currentUser) return;
+            document.getElementById('avatar-style-select').value = currentUser.avatar_style || 'bottts';
+            document.getElementById('avatar-seed-input').value = currentUser.avatar_seed || currentUser.username;
+            pendingCustomAvatarBase64 = currentUser.custom_avatar_url || null;
+            
+            if (pendingCustomAvatarBase64) {
+                document.getElementById('clear-custom-avatar-btn').classList.remove('hidden');
+            } else {
+                document.getElementById('clear-custom-avatar-btn').classList.add('hidden');
+            }
+
+            updateAvatarModalPreview();
+            document.getElementById('avatar-modal').classList.remove('hidden');
+        }
+
+        function closeAvatarModal() {
+            document.getElementById('avatar-modal').classList.add('hidden');
+        }
+
+        async function handleCustomAvatarSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                pendingCustomAvatarBase64 = await convertFileToBase64(file);
+                document.getElementById('clear-custom-avatar-btn').classList.remove('hidden');
+                updateAvatarModalPreview();
+            }
+        }
+
+        function clearCustomAvatarUpload() {
+            pendingCustomAvatarBase64 = null;
+            document.getElementById('custom-avatar-file').value = '';
+            document.getElementById('clear-custom-avatar-btn').classList.add('hidden');
+            updateAvatarModalPreview();
+        }
+
+        function updateAvatarModalPreview() {
+            if (pendingCustomAvatarBase64) {
+                document.getElementById('avatar-modal-preview').src = pendingCustomAvatarBase64;
+                return;
+            }
+
+            const style = document.getElementById('avatar-style-select').value;
+            const seed = document.getElementById('avatar-seed-input').value || 'preview';
+            const url = `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(seed)}`;
+            document.getElementById('avatar-modal-preview').src = url;
+        }
+
+        async function saveAvatarSelection() {
+            const style = document.getElementById('avatar-style-select').value;
+            const seed = document.getElementById('avatar-seed-input').value || currentUser.username;
+
+            try {
+                const res = await fetch('/api/avatar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ 
+                        avatar_style: style, 
+                        avatar_seed: seed,
+                        custom_avatar_url: pendingCustomAvatarBase64 
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    currentUser.avatar_style = style;
+                    currentUser.avatar_seed = seed;
+                    currentUser.custom_avatar_url = pendingCustomAvatarBase64;
+                    currentUser.avatar_url = data.avatar_url;
+                    
+                    document.getElementById('user-avatar-preview').src = data.avatar_url;
+                    closeAvatarModal();
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to save profile picture.');
+                }
+            } catch (err) {
+                console.error('Save profile picture error:', err);
+            }
+        }
+
+        // --- IMAGE STUDIO / MEME CANVA LOGIC ---
+
+        function handleImageSelect(event) {
+            const file = event.target.files[0];
+            const studioBtn = document.getElementById('meme-studio-btn');
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    selectedOriginalImage = new Image();
+                    selectedOriginalImage.src = e.target.result;
+                    selectedOriginalImage.onload = () => {
+                        editedBase64Image = null;
+                        studioBtn.classList.remove('hidden');
+                    };
+                };
+                reader.readAsDataURL(file);
+            } else {
+                selectedOriginalImage = null;
+                editedBase64Image = null;
+                studioBtn.classList.add('hidden');
+            }
+        }
+
+        function openMemeStudio() {
+            if (!selectedOriginalImage) return;
+            document.getElementById('meme-modal').classList.remove('hidden');
+            renderMemeCanvas();
+        }
+
+        function closeMemeStudio() {
+            document.getElementById('meme-modal').classList.add('hidden');
+        }
+
+        function renderMemeCanvas() {
+            if (!selectedOriginalImage) return;
+
+            const canvas = document.getElementById('meme-canvas');
+            const ctx = canvas.getContext('2d');
+
+            const maxDimension = 600;
+            let width = selectedOriginalImage.width;
+            let height = selectedOriginalImage.height;
+
+            if (width > maxDimension || height > maxDimension) {
+                if (width > height) {
+                    height = Math.round((height * maxDimension) / width);
+                    width = maxDimension;
+                } else {
+                    width = Math.round((width * maxDimension) / height);
+                    height = maxDimension;
+                }
+            }
+
+            canvas.width = width;
+            canvas.height = height;
+
+            ctx.clearRect(0, 0, width, height);
+
+            const filter = document.getElementById('meme-filter-select').value;
+            if (filter === 'grayscale') {
+                ctx.filter = 'grayscale(100%)';
+            } else if (filter === 'invert') {
+                ctx.filter = 'invert(100%) hue-rotate(180deg)';
+            } else if (filter === 'cyberpunk') {
+                ctx.filter = 'contrast(130%) saturate(180%) hue-rotate(-20deg)';
+            } else {
+                ctx.filter = 'none';
+            }
+
+            ctx.drawImage(selectedOriginalImage, 0, 0, width, height);
+            ctx.filter = 'none';
+
+            const topText = document.getElementById('meme-top-text').value.toUpperCase();
+            const bottomText = document.getElementById('meme-bottom-text').value.toUpperCase();
+
+            const fontSize = Math.floor(width / 12);
+            ctx.font = `900 ${fontSize}px sans-serif`;
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = Math.floor(fontSize / 8);
+            ctx.textAlign = 'center';
+
+            if (topText) {
+                ctx.textBaseline = 'top';
+                ctx.strokeText(topText, width / 2, 10);
+                ctx.fillText(topText, width / 2, 10);
+            }
+
+            if (bottomText) {
+                ctx.textBaseline = 'bottom';
+                ctx.strokeText(bottomText, width / 2, height - 10);
+                ctx.fillText(bottomText, width / 2, height - 10);
+            }
+        }
+
+        function applyMemeCanvasToPost() {
+            const canvas = document.getElementById('meme-canvas');
+            editedBase64Image = canvas.toDataURL('image/jpeg', 0.9);
+            alert('Image edits applied successfully!');
+            closeMemeStudio();
+        }
+
+        // --- FEED & USER SESSION LOGIC ---
+
+        function updateNsfwBadge() {
+            const badge = document.getElementById('nsfw-status-badge');
+            const nsfwToggle = document.getElementById('nsfw-toggle');
+
+            if (currentUser && currentUser.is_minor) {
+                if (badge) {
+                    badge.innerText = '(Locked: Under 18)';
+                    badge.style.color = '#ef4444';
+                }
+                if (nsfwToggle) {
+                    nsfwToggle.checked = false;
+                    nsfwToggle.disabled = true;
+                }
+                show18Plus = false;
+                localStorage.setItem('show18Plus', 'false');
+                return;
+            }
+
+            if (nsfwToggle) {
+                nsfwToggle.disabled = false;
+                nsfwToggle.checked = show18Plus;
+            }
+
+            if (badge) {
+                badge.innerText = show18Plus ? '(18+ Visible)' : '(18+ Hidden)';
+                badge.style.color = show18Plus ? '#f43f5e' : '#94a3b8';
+            }
+        }
+
+        async function handleNsfwToggleChange(checkbox) {
+            if (checkbox.checked) {
+                if (!currentUser) {
+                    alert('Please log in to verify your date of birth and access 18+ content.');
+                    checkbox.checked = false;
+                    window.location.href = 'auth.html';
+                    return;
+                }
+
+                if (currentUser.is_minor) {
+                    alert('18+ content is locked for accounts registered as minors.');
+                    checkbox.checked = false;
+                    return;
+                }
+
+                if (!currentUser.birthdate) {
+                    checkbox.checked = false;
+                    document.getElementById('age-modal').classList.remove('hidden');
+                    return;
+                }
+
+                show18Plus = true;
+            } else {
+                show18Plus = false;
+            }
+
+            localStorage.setItem('show18Plus', show18Plus);
+            updateNsfwBadge();
+            loadMessages();
+        }
+
+        async function submitBirthdateVerification(event) {
+            event.preventDefault();
+            const birthdateValue = document.getElementById('birthdate-input').value;
+            if (!birthdateValue) return;
+
+            try {
+                const res = await fetch('/api/verify-birthdate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ birthdate: birthdateValue })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    currentUser.birthdate = birthdateValue;
+                    currentUser.is_minor = data.is_minor;
+                    currentUser.age_verified = data.age_verified;
+
+                    document.getElementById('age-modal').classList.add('hidden');
+
+                    if (data.is_minor) {
+                        alert(data.message);
+                        show18Plus = false;
+                    } else {
+                        alert('Birthdate verified! 18+ content access granted.');
+                        show18Plus = true;
+                    }
+
+                    localStorage.setItem('show18Plus', show18Plus);
+                    updateNsfwBadge();
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Verification failed.');
+                }
+            } catch (err) {
+                console.error('Birthdate verification error:', err);
+            }
+        }
+
+        function cancelAgeVerification() {
+            document.getElementById('age-modal').classList.add('hidden');
+            document.getElementById('nsfw-toggle').checked = false;
+            show18Plus = false;
+            localStorage.setItem('show18Plus', 'false');
+            updateNsfwBadge();
+        }
+
         function updateUIState() {
             const authBtn = document.getElementById('auth-btn');
+            const avatarBtn = document.getElementById('avatar-btn');
             const userStatus = document.getElementById('user-status');
+            const userAvatarPreview = document.getElementById('user-avatar-preview');
             const postForm = document.getElementById('post-form');
             const loginNotice = document.getElementById('login-notice');
+            const post18plusWrapper = document.getElementById('post-18plus-wrapper');
 
             if (currentUser) {
-                if (userStatus) userStatus.innerText = `Logged in as @${currentUser.username}`;
+                if (userStatus) userStatus.innerText = `@${currentUser.username}`;
+                if (userAvatarPreview && currentUser.avatar_url) userAvatarPreview.src = currentUser.avatar_url;
                 if (authBtn) authBtn.innerText = 'Logout';
+                if (avatarBtn) avatarBtn.classList.remove('hidden');
                 if (postForm) postForm.classList.remove('hidden');
                 if (loginNotice) loginNotice.classList.add('hidden');
                 
                 const authorInput = document.getElementById('post-author');
                 if (authorInput) authorInput.value = currentUser.username;
+
+                if (currentUser.is_minor && post18plusWrapper) {
+                    post18plusWrapper.style.display = 'none';
+                }
             } else {
                 if (userStatus) userStatus.innerText = 'Not logged in';
+                if (userAvatarPreview) userAvatarPreview.src = 'https://api.dicebear.com/7.x/bottts/svg?seed=guest';
                 if (authBtn) authBtn.innerText = 'Login / Register';
+                if (avatarBtn) avatarBtn.classList.add('hidden');
                 if (postForm) postForm.classList.add('hidden');
                 if (loginNotice) loginNotice.classList.remove('hidden');
             }
+            updateNsfwBadge();
         }
 
         async function fetchFollowingList() {
@@ -125,7 +541,7 @@
             if (!messagesContainer) return;
 
             try {
-                const response = await fetch(`/api/messages?feed=${currentFeedTab}`, { credentials: 'include' });
+                const response = await fetch(`/api/messages?feed=${currentFeedTab}&show18plus=${show18Plus}`, { credentials: 'include' });
                 const messages = await response.json();
 
                 messagesContainer.innerHTML = '';
@@ -141,22 +557,27 @@
 
                     let imageHtml = '';
                     if (msg.image_url) {
-                        imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
+                        if (msg.is_18plus) {
+                            imageHtml = `
+                                <div class="nsfw-overlay-container">
+                                    <img src="${msg.image_url}" class="msg-img blurred-image" onclick="this.classList.toggle('unblurred')" alt="18+ Content (Click to Reveal)">
+                                </div>
+                            `;
+                        } else {
+                            imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
+                        }
                     }
 
-                    // Check post ownership
                     const isOwner = currentUser && (
                         (msg.user_id && Number(currentUser.id) === Number(msg.user_id)) ||
                         (currentUser.username === msg.name)
                     );
 
-                    // Delete button (Owner only)
                     let deleteBtnHtml = '';
                     if (isOwner) {
                         deleteBtnHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
                     }
 
-                    // Follow / Unfollow button
                     let followBtnHtml = '';
                     const targetId = msg.user_id;
 
@@ -166,17 +587,23 @@
                             const btnText = isFollowing ? 'Unfollow' : 'Follow';
                             const btnClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
                             followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${btnClass}">${btnText}</button>`;
-                        } else if (msg.name) {
-                            followBtnHtml = `<button onclick="toggleFollowByName('${escapeHtml(msg.name)}')" class="btn-follow">Follow</button>`;
                         }
                     }
 
+                    let nsfwBadgeHtml = '';
+                    if (msg.is_18plus) {
+                        nsfwBadgeHtml = `<span style="background: #f43f5e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 700;">18+</span>`;
+                    }
+
+                    const avatarUrl = msg.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(msg.name || 'user')}`;
                     const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
 
                     card.innerHTML = `
                         <div class="msg-header">
-                            <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <img src="${avatarUrl}" style="width: 32px; height: 32px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
                                 <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
+                                ${nsfwBadgeHtml}
                                 ${followBtnHtml}
                             </div>
                             <div class="msg-meta">
@@ -207,21 +634,13 @@
                     method: 'POST',
                     credentials: 'include'
                 });
-                const data = await res.json();
-
                 if (res.ok) {
                     await fetchFollowingList();
                     loadMessages();
-                } else {
-                    alert(data.error || 'Failed to update follow state.');
                 }
             } catch (err) {
                 console.error('Follow error:', err);
             }
-        }
-
-        function toggleFollowByName(username) {
-            alert(`To follow @${username}, please run the SQL update on the database to map their username to an existing user_id.`);
         }
 
         async function deletePost(postId) {
@@ -234,9 +653,6 @@
                 });
                 if (res.ok) {
                     loadMessages();
-                } else {
-                    const data = await res.json();
-                    alert(data.error || 'Failed to delete post.');
                 }
             } catch (err) {
                 console.error('Delete error:', err);
@@ -252,13 +668,14 @@
 
             const contentInput = document.getElementById('post-content').value;
             const imageFileInput = document.getElementById('post-image').files[0];
+            const is18PlusCheckbox = document.getElementById('post-is-18plus').checked;
             const submitBtn = document.getElementById('submit-btn');
 
             submitBtn.disabled = true;
             submitBtn.innerText = 'Posting...';
 
-            let base64Image = null;
-            if (imageFileInput) {
+            let base64Image = editedBase64Image;
+            if (!base64Image && imageFileInput) {
                 base64Image = await convertFileToBase64(imageFileInput);
             }
 
@@ -267,12 +684,20 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
-                    body: JSON.stringify({ message: contentInput, image_url: base64Image })
+                    body: JSON.stringify({ 
+                        message: contentInput, 
+                        image_url: base64Image,
+                        is_18plus: is18PlusCheckbox 
+                    })
                 });
 
                 if (response.ok) {
                     document.getElementById('post-content').value = '';
                     document.getElementById('post-image').value = '';
+                    document.getElementById('post-is-18plus').checked = false;
+                    document.getElementById('meme-studio-btn').classList.add('hidden');
+                    selectedOriginalImage = null;
+                    editedBase64Image = null;
                     loadMessages();
                 } else {
                     const data = await response.json();
@@ -300,6 +725,8 @@
                 await fetch('/api/logout', { method: 'POST', credentials: 'include' });
                 currentUser = null;
                 followingUserIds = [];
+                show18Plus = false;
+                localStorage.setItem('show18Plus', 'false');
                 updateUIState();
                 loadMessages();
             } catch (err) {

@@ -357,3 +357,20 @@ button[type="submit"]:disabled {
     color: #ffffff;
     border-color: #ef4444;
 }
+/* Blurred 18+ Image Filter */
+.blurred-image {
+    filter: blur(25px);
+    transition: filter 0.3s ease;
+    cursor: pointer;
+}
+
+.blurred-image:hover,
+.blurred-image.unblurred {
+    filter: blur(0px);
+}
+
+.nsfw-overlay-container {
+    position: relative;
+    display: inline-block;
+    width: 100%;
+}
