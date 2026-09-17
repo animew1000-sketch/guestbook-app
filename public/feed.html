@@ -159,7 +159,6 @@
         let clientNsfwModel = null;
 
         document.addEventListener('DOMContentLoaded', async () => {
-            // Suppress extra TensorFlow logging warnings in browser console
             if (window.tf && tf.ENV) {
                 tf.ENV.set('PROD', true);
             }
@@ -180,7 +179,7 @@
             loadMessages();
         });
 
-        // --- CLIENT-SIDE NSFW SCANNING (CANVAS EXTRACTOR FIX) ---
+        // --- CLIENT-SIDE NSFW SCANNING ---
 
         async function scanNsfwOnClient(base64Img) {
             if (!base64Img) return false;
@@ -199,13 +198,13 @@
                     img.onload = async () => {
                         try {
                             const canvas = document.createElement('canvas');
-                            canvas.width = img.width || 224;
-                            canvas.height = img.height || 224;
+                            canvas.width = 224;
+                            canvas.height = 224;
                             const ctx = canvas.getContext('2d');
-                            ctx.drawImage(img, 0, 0);
+                            ctx.drawImage(img, 0, 0, 224, 224);
 
                             const predictions = await clientNsfwModel.classify(canvas);
-                            console.log('Client NSFW Scan Predictions:', predictions);
+                            console.log('NSFW Predictions:', predictions);
 
                             const scores = {};
                             predictions.forEach(p => scores[p.className] = p.probability);
@@ -213,9 +212,10 @@
                             const hentai = scores['Hentai'] || 0;
                             const porn = scores['Porn'] || 0;
                             const sexy = scores['Sexy'] || 0;
-                            const totalExplicit = hentai + porn + sexy;
+                            const neutral = scores['Neutral'] || 0;
+                            const drawing = scores['Drawing'] || 0;
 
-                            const isExplicit = (porn > 0.15 || hentai > 0.10 || sexy > 0.30 || totalExplicit > 0.25);
+                            const isExplicit = (porn > 0.10 || hentai > 0.08 || sexy > 0.20 || (1 - neutral - drawing) > 0.20);
                             resolve(isExplicit);
                         } catch (err) {
                             console.error('Classification execution error:', err);
@@ -223,13 +223,9 @@
                         }
                     };
 
-                    img.onerror = (err) => {
-                        console.error('Image load error for NSFW scan:', err);
-                        resolve(false);
-                    };
+                    img.onerror = () => resolve(false);
                 });
             } catch (err) {
-                console.warn('Client-side NSFW scan error:', err);
                 return false;
             }
         }
@@ -427,6 +423,9 @@
             const nsfwToggle = document.getElementById('nsfw-toggle');
 
             if (currentUser && currentUser.is_minor) {
+                show18Plus = false;
+                localStorage.setItem('show18Plus', 'false');
+
                 if (badge) {
                     badge.innerText = '(Locked: Under 18)';
                     badge.style.color = '#ef4444';
@@ -435,8 +434,6 @@
                     nsfwToggle.checked = false;
                     nsfwToggle.disabled = true;
                 }
-                show18Plus = false;
-                localStorage.setItem('show18Plus', 'false');
                 return;
             }
 
@@ -721,7 +718,7 @@
             }
         }
 
-        // --- SUBMIT POST HANDLER (WITH STRICT MINOR/18+ BLOCK) ---
+        // --- SUBMIT POST HANDLER ---
 
         async function handlePostSubmit(event) {
             event.preventDefault();
@@ -742,33 +739,27 @@
                     submitBtn.innerText = 'Compressing Image...';
                     base64Image = await convertFileToBase64(imageFileInput);
                 } catch (err) {
-                    console.error('Error compressing image:', err);
                     alert('Failed to process image file.');
-                    submitBtn.innerText = 'Submit Post';
                     return;
                 }
             }
 
-            // Run Client-Side NSFW Detection
             if (base64Image) {
-                submitBtn.innerText = 'Checking Image Content...';
+                submitBtn.innerText = 'Scanning Image...';
                 const detectedNsfw = await scanNsfwOnClient(base64Image);
 
                 if (detectedNsfw) {
                     is18PlusCheckbox = true;
-                    document.getElementById('post-is-18plus').checked = true;
 
-                    // Block minor instantly
                     if (currentUser.is_minor) {
-                        alert('Explicit/18+ content detected in image. Accounts under 18 are not allowed to post mature content.');
+                        alert('Explicit content detected. Accounts under 18 cannot upload mature imagery.');
                         submitBtn.disabled = false;
                         submitBtn.innerText = 'Submit Post';
                         return;
                     }
 
-                    // Block unverified adult
                     if (!currentUser.age_verified) {
-                        alert('Explicit content detected in image. Please verify your age with a birthdate to post 18+ content.');
+                        alert('Explicit content detected. Please verify your age with a birthdate.');
                         submitBtn.disabled = false;
                         submitBtn.innerText = 'Submit Post';
                         return;
@@ -802,13 +793,9 @@
                 } else {
                     const data = await response.json();
                     alert(data.error || 'Failed to submit post.');
-                    if (response.status === 401) {
-                        await checkUserSession();
-                    }
                 }
             } catch (err) {
-                console.error('Submit error:', err);
-                alert('Network timeout or connection lost. Please try again.');
+                alert('Network connection error.');
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.innerText = 'Submit Post';

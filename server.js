@@ -338,23 +338,15 @@ app.post('/api/messages', async (req, res) => {
         return res.status(401).json({ error: 'You must log in to post.' });
     }
 
-    if (req.session.user.is_minor) {
-        req.body.is_18plus = false;
-    }
-
     const { message, image_url, is_18plus } = req.body;
     if (!message) {
         return res.status(400).json({ error: 'Post content is required.' });
     }
 
-    const detected18Plus = Boolean(is_18plus);
+    let detected18Plus = Boolean(is_18plus);
 
-    if (detected18Plus && req.session.user.is_minor) {
-        return res.status(403).json({ error: 'Explicit content detected. Minors cannot post 18+ content.' });
-    }
-
-    if (detected18Plus && !req.session.user.age_verified) {
-        return res.status(403).json({ error: 'Explicit content detected. Please verify your age with a birthdate to proceed.' });
+    if (req.session.user.is_minor && detected18Plus) {
+        return res.status(403).json({ error: 'Accounts under 18 are restricted from submitting mature 18+ content.' });
     }
 
     const userId = req.session.user.id;
