@@ -180,15 +180,14 @@
         });
 
         // --- CLIENT-SIDE NSFW SCANNING (CDN PATH + SKIN PIXEL ANALYSIS) ---
-
         async function scanNsfwOnClient(base64Img) {
     if (!base64Img) return false;
 
     try {
         if (!clientNsfwModel) {
-            console.log('Loading local NSFW model...');
-            // Points to your own local static directory
-            clientNsfwModel = await nsfwjs.load('/model/');
+            console.log('Loading local NSFW graph model...');
+            // Tell nsfwjs to parse model.json using the Graph Model executor
+            clientNsfwModel = await nsfwjs.load('/model/', { type: 'graph' });
         }
 
         return new Promise((resolve) => {
