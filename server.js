@@ -29,12 +29,13 @@ app.use(session({
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Preload NSFWJS Model (InceptionV3)
+// Preload lightweight MobileNetV2 Model to conserve server RAM
 let nsfwModel = null;
 async function loadNsfwModel() {
     try {
-        nsfwModel = await nsfw.load('InceptionV3');
-        console.log('NSFW InceptionV3 AI model loaded successfully.');
+        // MobileNetV2 uses significantly less memory than InceptionV3
+        nsfwModel = await nsfw.load('MobileNetV2');
+        console.log('NSFW MobileNetV2 AI model loaded successfully.');
     } catch (err) {
         console.error('Failed to load NSFW detection model:', err.message);
     }
@@ -48,7 +49,9 @@ async function detectExplicitContent(base64Image) {
         const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
         const imageBuffer = Buffer.from(base64Data, 'base64');
         
+        // Resize large uploaded images to max 400px before AI scanning to prevent RAM spikes
         const { data, info } = await sharp(imageBuffer)
+            .resize({ width: 400, height: 400, fit: 'inside' })
             .raw()
             .toBuffer({ resolveWithObject: true });
 
@@ -57,6 +60,7 @@ async function detectExplicitContent(base64Image) {
 
         const predictions = await nsfwModel.classify(rgbTensor);
         
+        // Explicitly release memory back to V8 Engine
         imageTensor.dispose();
         if (info.channels === 4) rgbTensor.dispose();
 
@@ -64,6 +68,8 @@ async function detectExplicitContent(base64Image) {
         predictions.forEach(pred => {
             scores[pred.className] = pred.probability;
         });
+
+        console.log('NSFW Model Predictions:', scores);
 
         const hentaiScore = scores['Hentai'] || 0;
         const pornScore = scores['Porn'] || 0;
@@ -186,7 +192,6 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
-// Update Avatar or Custom Profile Picture
 app.post('/api/avatar', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'Not logged in' });
