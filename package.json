@@ -4,7 +4,7 @@
   "description": "Guestbook app with MySQL, Cloudinary, and User Profiles",
   "main": "server.js",
   "scripts": {
-    "start": "node --max-old-space-size=512 server.js",
+    "start": "node --max-old-space-size=256 server.js",
     "autosync": "node auto-sync.js"
   },
   "dependencies": {

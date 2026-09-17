@@ -29,40 +29,39 @@ app.use(session({
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Preload lightweight MobileNetV2 Model to conserve server RAM
+// Lazy-load MobileNetV2 Model to conserve RAM on startup
 let nsfwModel = null;
-async function loadNsfwModel() {
-    try {
-        // MobileNetV2 uses significantly less memory than InceptionV3
+async function getOrLoadNsfwModel() {
+    if (!nsfwModel) {
+        console.log('Loading NSFW Model into memory...');
         nsfwModel = await nsfw.load('MobileNetV2');
-        console.log('NSFW MobileNetV2 AI model loaded successfully.');
-    } catch (err) {
-        console.error('Failed to load NSFW detection model:', err.message);
     }
+    return nsfwModel;
 }
-loadNsfwModel();
 
+// Memory-optimized NSFW detection with auto tensor cleanup
 async function detectExplicitContent(base64Image) {
-    if (!nsfwModel || !base64Image) return false;
+    if (!base64Image) return false;
+    
+    const model = await getOrLoadNsfwModel();
+    if (!model) return false;
 
     try {
         const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
         const imageBuffer = Buffer.from(base64Data, 'base64');
         
-        // Resize large uploaded images to max 400px before AI scanning to prevent RAM spikes
+        // Downscale image to 224x224 (exact size for MobileNetV2) to minimize memory
         const { data, info } = await sharp(imageBuffer)
-            .resize({ width: 400, height: 400, fit: 'inside' })
+            .resize({ width: 224, height: 224, fit: 'cover' })
             .raw()
             .toBuffer({ resolveWithObject: true });
 
-        const imageTensor = tf.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels], 'int32');
-        const rgbTensor = info.channels === 4 ? imageTensor.slice([0, 0, 0], [-1, -1, 3]) : imageTensor;
-
-        const predictions = await nsfwModel.classify(rgbTensor);
-        
-        // Explicitly release memory back to V8 Engine
-        imageTensor.dispose();
-        if (info.channels === 4) rgbTensor.dispose();
+        // Wrap tensor operations in tf.tidy() for immediate garbage collection
+        const predictions = await tf.tidy(() => {
+            const imageTensor = tf.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels], 'int32');
+            const rgbTensor = info.channels === 4 ? imageTensor.slice([0, 0, 0], [-1, -1, 3]) : imageTensor;
+            return model.classify(rgbTensor);
+        });
 
         const scores = {};
         predictions.forEach(pred => {
