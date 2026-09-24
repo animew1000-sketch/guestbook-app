@@ -23,6 +23,7 @@
                 <span id="user-status">Not logged in</span>
             </div>
             <div style="display: flex; gap: 8px;">
+                <button id="inbox-btn" class="btn-small hidden" style="background: #0284c7;" onclick="openInboxModal()">💬 Messages</button>
                 <button id="avatar-btn" class="btn-small hidden" style="background: #a855f7;" onclick="openAvatarModal()">Edit Profile Picture</button>
                 <button id="auth-btn" class="btn-small" onclick="handleAuthButtonClick()">Login / Register</button>
             </div>
@@ -79,6 +80,16 @@
             <div id="dm-toast-body" style="font-size: 0.8rem; color: #cbd5e1;">You have a new message!</div>
         </div>
         <button onclick="event.stopPropagation(); closeToast();" style="background: transparent; border: none; color: #94a3b8; font-size: 1rem; cursor: pointer; margin-left: 8px;">✕</button>
+    </div>
+
+    <!-- Inbox / Contacts Selector Modal -->
+    <div id="inbox-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
+        <div style="background: #1e293b; border: 1px solid #0284c7; padding: 20px; border-radius: 12px; max-width: 380px; width: 100%;">
+            <h3 style="color: #38bdf8; margin-top: 0; margin-bottom: 12px;">Direct Messages Inbox</h3>
+            <p style="color: #94a3b8; font-size: 0.85rem; margin-bottom: 12px;">Select a active user to view conversation:</p>
+            <div id="inbox-user-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 250px; overflow-y: auto; margin-bottom: 16px;"></div>
+            <button onclick="closeInboxModal()" style="width: 100%; padding: 8px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Close</button>
+        </div>
     </div>
 
     <!-- Direct Messaging Drawer -->
@@ -197,10 +208,8 @@
         let selectedOriginalImage = null;
         let editedBase64Image = null;
 
-        // Client-side AI model instance
         let clientNsfwModel = null;
 
-        // DM, WebSockets & Notifications
         let socket = null;
         let currentActiveDmUserId = null;
         let selectedMediaUrl = null;
@@ -309,7 +318,44 @@
             }
         }
 
-        // --- DIRECT MESSAGING, WEBSOCKETS & NOTIFICATIONS ---
+        // --- DIRECT MESSAGING, INBOX & NOTIFICATIONS ---
+
+        function openInboxModal() {
+            document.getElementById('inbox-modal').classList.remove('hidden');
+            const listContainer = document.getElementById('inbox-user-list');
+            listContainer.innerHTML = '';
+
+            const userMap = new Map();
+            document.querySelectorAll('.msg-card').forEach(card => {
+                const author = card.querySelector('.msg-author')?.innerText;
+                const dmBtn = card.querySelector('.btn-dm-card');
+                const userId = dmBtn ? dmBtn.getAttribute('data-user-id') : null;
+
+                if (author && userId && currentUser && Number(userId) !== Number(currentUser.id)) {
+                    userMap.set(userId, author);
+                }
+            });
+
+            if (userMap.size === 0) {
+                listContainer.innerHTML = '<p style="color: #64748b; font-size: 0.85rem;">No active users found in feed.</p>';
+                return;
+            }
+
+            userMap.forEach((username, userId) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'padding: 8px 12px; background: #0f172a; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border: 1px solid #334155;';
+                row.innerHTML = `<span style="color: #fff; font-weight: 600;">@${username}</span> <button class="btn-small" style="background: #0284c7;">Chat</button>`;
+                row.onclick = () => {
+                    closeInboxModal();
+                    openDmDrawer(userId, username);
+                };
+                listContainer.appendChild(row);
+            });
+        }
+
+        function closeInboxModal() {
+            document.getElementById('inbox-modal').classList.add('hidden');
+        }
 
         function initSocketConnection() {
             if (!socket) {
@@ -837,6 +883,7 @@
         function updateUIState() {
             const authBtn = document.getElementById('auth-btn');
             const avatarBtn = document.getElementById('avatar-btn');
+            const inboxBtn = document.getElementById('inbox-btn');
             const userStatus = document.getElementById('user-status');
             const userAvatarPreview = document.getElementById('user-avatar-preview');
             const postForm = document.getElementById('post-form');
@@ -848,6 +895,7 @@
                 if (userAvatarPreview && currentUser.avatar_url) userAvatarPreview.src = currentUser.avatar_url;
                 if (authBtn) authBtn.innerText = 'Logout';
                 if (avatarBtn) avatarBtn.classList.remove('hidden');
+                if (inboxBtn) inboxBtn.classList.remove('hidden');
                 if (postForm) postForm.classList.remove('hidden');
                 if (loginNotice) loginNotice.classList.add('hidden');
                 
@@ -862,6 +910,7 @@
                 if (userAvatarPreview) userAvatarPreview.src = 'https://api.dicebear.com/7.x/bottts/svg?seed=guest';
                 if (authBtn) authBtn.innerText = 'Login / Register';
                 if (avatarBtn) avatarBtn.classList.add('hidden');
+                if (inboxBtn) inboxBtn.classList.add('hidden');
                 if (postForm) postForm.classList.add('hidden');
                 if (loginNotice) loginNotice.classList.remove('hidden');
             }
@@ -954,7 +1003,6 @@
                         const btnClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
                         followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${btnClass}">${btnText}</button>`;
                         
-                        // Added btn-dm-card class and data-user-id for real-time notification badging
                         dmBtnHtml = `<button onclick="openDmDrawer(${targetId}, '${escapeHtml(msg.name)}')" class="btn-small btn-dm-card" data-user-id="${targetId}" style="background: #0284c7; padding: 2px 8px;">💬 DM</button>`;
                     }
 
