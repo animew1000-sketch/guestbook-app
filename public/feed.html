@@ -7,8 +7,9 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="style.css">
 
-    <!-- Single NSFWJS Bundle (Includes bundled TensorFlow to prevent kernel duplication warnings) -->
+    <!-- TensorFlow & NSFWJS -->
     <script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
     <div class="container">
@@ -48,7 +49,7 @@
             <textarea id="post-content" rows="3" placeholder="Write a public update..." required></textarea>
             
             <div style="display: flex; gap: 8px; align-items: center;">
-                <input type="file" id="post-image" accept="image/*" onchange="handleImageSelect(event)">
+                <input type="file" id="post-image" accept="image/png, image/jpeg, image/gif, image/webp" onchange="handleImageSelect(event)">
                 <button type="button" id="meme-studio-btn" class="btn-small hidden" style="background: #a855f7; white-space: nowrap;" onclick="openMemeStudio()">✨ Open Image Studio</button>
             </div>
             
@@ -68,6 +69,47 @@
 
         <!-- Feed List -->
         <div id="messages" class="messages"></div>
+    </div>
+
+    <!-- Incoming DM Toast Notification -->
+    <div id="dm-toast" class="hidden" style="position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #818cf8; color: #fff; padding: 12px 18px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); display: flex; align-items: center; gap: 12px; z-index: 3000; cursor: pointer;">
+        <span style="font-size: 1.2rem;">💬</span>
+        <div>
+            <div id="dm-toast-title" style="font-weight: 700; font-size: 0.85rem; color: #818cf8;">New Message</div>
+            <div id="dm-toast-body" style="font-size: 0.8rem; color: #cbd5e1;">You have a new message!</div>
+        </div>
+        <button onclick="event.stopPropagation(); closeToast();" style="background: transparent; border: none; color: #94a3b8; font-size: 1rem; cursor: pointer; margin-left: 8px;">✕</button>
+    </div>
+
+    <!-- Direct Messaging Drawer -->
+    <div id="dm-modal" class="hidden" style="position: fixed; top: 0; right: 0; width: 380px; height: 100vh; background: #0f172a; border-left: 1px solid #334155; display: flex; flex-direction: column; z-index: 1500;">
+        <div style="padding: 12px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center;">
+            <h3 id="dm-recipient-title" style="color: #818cf8; margin: 0; font-size: 1rem;">Chat</h3>
+            <button onclick="closeDmDrawer()" style="background: transparent; color: #94a3b8; border: none; font-size: 1.2rem; cursor: pointer;">✕</button>
+        </div>
+
+        <div id="dm-chat-history" style="flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;"></div>
+
+        <!-- Giphy Search Panel -->
+        <div id="giphy-picker" class="hidden" style="height: 180px; background: #1e293b; border-top: 1px solid #334155; padding: 8px; overflow-y: auto;">
+            <input type="text" id="giphy-search-input" placeholder="Search Giphy..." oninput="searchGiphy(this.value)" style="width: 100%; padding: 6px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 4px; margin-bottom: 6px; font-size: 0.8rem;">
+            <div id="giphy-results" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;"></div>
+        </div>
+
+        <div style="padding: 10px; background: #1e293b; border-top: 1px solid #334155; display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; gap: 6px;">
+                <button type="button" onclick="toggleGiphyPicker()" class="btn-small" style="background: #e11d48; padding: 4px 8px; font-size: 0.75rem;">Giphy</button>
+                <input type="file" id="dm-gif-input" accept="image/gif" style="display: none;" onchange="handleGifUpload(event)">
+                <button type="button" onclick="document.getElementById('dm-gif-input').click()" class="btn-small" style="background: #a855f7; padding: 4px 8px; font-size: 0.75rem;">Upload GIF</button>
+                <input type="file" id="dm-video-input" accept="video/mp4,video/webm" style="display: none;" onchange="handleVideoUpload(event)">
+                <button type="button" onclick="document.getElementById('dm-video-input').click()" class="btn-small" style="background: #0284c7; padding: 4px 8px; font-size: 0.75rem;">🎥 Video</button>
+            </div>
+            
+            <div style="display: flex; gap: 6px;">
+                <input type="text" id="dm-input-text" placeholder="Type a message..." style="flex: 1; padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem;">
+                <button type="button" onclick="submitDirectMessage()" style="padding: 8px 14px; background: #6366f1; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Send</button>
+            </div>
+        </div>
     </div>
 
     <!-- Avatar Customizer Modal -->
@@ -158,6 +200,17 @@
         // Client-side AI model instance
         let clientNsfwModel = null;
 
+        // DM, WebSockets & Notifications
+        let socket = null;
+        let currentActiveDmUserId = null;
+        let selectedMediaUrl = null;
+        let selectedMediaType = 'image';
+        let unreadDmSenders = new Set();
+
+        const GIPHY_API_KEY = 'YOUR_GIPHY_API_KEY';
+        const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUDINARY_CLOUD_NAME';
+        const CLOUDINARY_PRESET = 'YOUR_CLOUDINARY_UNSIGNED_PRESET';
+
         document.addEventListener('DOMContentLoaded', async () => {
             if (window.tf && tf.ENV) {
                 tf.ENV.set('PROD', true);
@@ -179,86 +232,310 @@
             loadMessages();
         });
 
-        // --- CLIENT-SIDE NSFW SCANNING (CDN PATH + SKIN PIXEL ANALYSIS) ---
-        async function scanNsfwOnClient(base64Img) {
-    if (!base64Img) return false;
+        // --- CLIENT-SIDE NSFW CLASSIFIER (GRAPH MODEL + SKIN TONE ANALYSIS) ---
 
-    try {
-        if (!clientNsfwModel) {
-            console.log('Loading local NSFW graph model...');
-            // Tell nsfwjs to parse model.json using the Graph Model executor
-            clientNsfwModel = await nsfwjs.load('/model/', { type: 'graph' });
+        async function scanNsfwOnClient(base64Img) {
+            if (!base64Img) return false;
+
+            try {
+                if (!clientNsfwModel) {
+                    console.log('Loading local NSFW Graph Model...');
+                    clientNsfwModel = await nsfwjs.load('/model/', { type: 'graph' });
+                }
+
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = base64Img;
+
+                    img.onload = async () => {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = 224;
+                            canvas.height = 224;
+                            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                            ctx.drawImage(img, 0, 0, 224, 224);
+
+                            const predictions = await clientNsfwModel.classify(canvas);
+                            console.log('NSFW Predictions:', predictions);
+
+                            const scores = {};
+                            predictions.forEach(p => scores[p.className] = p.probability);
+
+                            const hentai = scores['Hentai'] || 0;
+                            const porn = scores['Porn'] || 0;
+                            const sexy = scores['Sexy'] || 0;
+                            const neutral = scores['Neutral'] || 0;
+                            const drawing = scores['Drawing'] || 0;
+
+                            const nonSafeTotal = hentai + porn + sexy;
+
+                            const imageData = ctx.getImageData(0, 0, 224, 224).data;
+                            let skinPixelCount = 0;
+                            const totalPixels = 224 * 224;
+
+                            for (let i = 0; i < imageData.length; i += 4) {
+                                const r = imageData[i];
+                                const g = imageData[i + 1];
+                                const b = imageData[i + 2];
+
+                                const isSkin = (
+                                    (r > 95 && g > 40 && b > 20 && (Math.max(r, g, b) - Math.min(r, g, b) > 15) && Math.abs(r - g) > 15 && r > g && r > b) ||
+                                    (r > 220 && g > 210 && b > 170 && Math.abs(r - g) <= 25 && r > b && g > b)
+                                );
+
+                                if (isSkin) skinPixelCount++;
+                            }
+
+                            const skinRatio = skinPixelCount / totalPixels;
+                            console.log(`Skin ratio detected: ${(skinRatio * 100).toFixed(1)}%`);
+
+                            const isExplicitML = (porn > 0.05 || hentai > 0.05 || sexy > 0.12 || nonSafeTotal > 0.15);
+                            const isExplicitDrawing = (drawing > 0.30 && (hentai > 0.03 || sexy > 0.08 || skinRatio > 0.25));
+                            const isExplicitSkinRatio = (skinRatio > 0.35 && (neutral < 0.80 || nonSafeTotal > 0.08));
+
+                            resolve(isExplicitML || isExplicitDrawing || isExplicitSkinRatio);
+                        } catch (err) {
+                            console.error('Classification execution error:', err);
+                            resolve(false);
+                        }
+                    };
+
+                    img.onerror = () => resolve(false);
+                });
+            } catch (err) {
+                console.error('NSFW Scan Error:', err);
+                return false;
+            }
         }
 
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.src = base64Img;
+        // --- DIRECT MESSAGING, WEBSOCKETS & NOTIFICATIONS ---
 
-            img.onload = async () => {
-                try {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = 224;
-                    canvas.height = 224;
-                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                    ctx.drawImage(img, 0, 0, 224, 224);
-
-                    // 1. Machine Learning Classification
-                    const predictions = await clientNsfwModel.classify(canvas);
-                    console.log('NSFW Predictions:', predictions);
-
-                    const scores = {};
-                    predictions.forEach(p => scores[p.className] = p.probability);
-
-                    const hentai = scores['Hentai'] || 0;
-                    const porn = scores['Porn'] || 0;
-                    const sexy = scores['Sexy'] || 0;
-                    const neutral = scores['Neutral'] || 0;
-                    const drawing = scores['Drawing'] || 0;
-
-                    const nonSafeTotal = hentai + porn + sexy;
-
-                    // 2. Skin Pixel Analysis for Anime/Real Palette
-                    const imageData = ctx.getImageData(0, 0, 224, 224).data;
-                    let skinPixelCount = 0;
-                    const totalPixels = 224 * 224;
-
-                    for (let i = 0; i < imageData.length; i += 4) {
-                        const r = imageData[i];
-                        const g = imageData[i + 1];
-                        const b = imageData[i + 2];
-
-                        const isSkin = (
-                            (r > 95 && g > 40 && b > 20 && (Math.max(r, g, b) - Math.min(r, g, b) > 15) && Math.abs(r - g) > 15 && r > g && r > b) ||
-                            (r > 220 && g > 210 && b > 170 && Math.abs(r - g) <= 25 && r > b && g > b)
-                        );
-
-                        if (isSkin) skinPixelCount++;
+        function initSocketConnection() {
+            if (!socket) {
+                socket = io();
+                
+                socket.on('receive_direct_message', (msg) => {
+                    if (currentActiveDmUserId && Number(msg.sender_id) === Number(currentActiveDmUserId)) {
+                        appendDmToChat(msg);
                     }
+                });
 
-                    const skinRatio = skinPixelCount / totalPixels;
-                    console.log(`Skin ratio detected: ${(skinRatio * 100).toFixed(1)}%`);
+                socket.on('dm_notification', (data) => {
+                    if (!currentActiveDmUserId || Number(currentActiveDmUserId) !== Number(data.sender_id)) {
+                        unreadDmSenders.add(Number(data.sender_id));
+                        showDmToast(data.sender_id, data.sender_username, data.message);
+                        updateDmBadgesOnFeed();
+                    }
+                });
 
-                    // 3. Strict Aggregated Rules
-                    const isExplicitML = (porn > 0.05 || hentai > 0.05 || sexy > 0.12 || nonSafeTotal > 0.15);
-                    const isExplicitDrawing = (drawing > 0.30 && (hentai > 0.03 || sexy > 0.08 || skinRatio > 0.25));
-                    const isExplicitSkinRatio = (skinRatio > 0.35 && (neutral < 0.80 || nonSafeTotal > 0.08));
+                socket.on('message_sent_confirm', (msg) => {
+                    appendDmToChat(msg);
+                });
+            }
+        }
 
-                    const finalDecision = isExplicitML || isExplicitDrawing || isExplicitSkinRatio;
-                    resolve(finalDecision);
-                } catch (err) {
-                    console.error('Classification execution error:', err);
-                    resolve(false);
-                }
+        function showDmToast(senderId, senderUsername, messageSnippet) {
+            const toast = document.getElementById('dm-toast');
+            const toastTitle = document.getElementById('dm-toast-title');
+            const toastBody = document.getElementById('dm-toast-body');
+
+            toastTitle.innerText = `New message from @${senderUsername}`;
+            toastBody.innerText = messageSnippet.length > 35 ? messageSnippet.substring(0, 35) + '...' : messageSnippet;
+
+            toast.onclick = () => {
+                openDmDrawer(senderId, senderUsername);
+                closeToast();
             };
 
-            img.onerror = () => resolve(false);
-        });
-    } catch (err) {
-        console.error('NSFW Scan Error:', err);
-        return false;
-    }
-}
+            toast.classList.remove('hidden');
+
+            setTimeout(() => {
+                closeToast();
+            }, 5000);
+        }
+
+        function closeToast() {
+            document.getElementById('dm-toast').classList.add('hidden');
+        }
+
+        function updateDmBadgesOnFeed() {
+            document.querySelectorAll('.btn-dm-card').forEach(btn => {
+                const userId = Number(btn.getAttribute('data-user-id'));
+                if (unreadDmSenders.has(userId)) {
+                    btn.style.position = 'relative';
+                    btn.style.border = '1px solid #f43f5e';
+                    btn.innerHTML = `💬 DM <span style="position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; background: #f43f5e; border-radius: 50%;"></span>`;
+                }
+            });
+        }
+
+        async function openDmDrawer(targetUserId, targetUsername) {
+            currentActiveDmUserId = targetUserId;
+            document.getElementById('dm-recipient-title').innerText = `@${targetUsername}`;
+            document.getElementById('dm-modal').classList.remove('hidden');
+            
+            unreadDmSenders.delete(Number(targetUserId));
+            updateDmBadgesOnFeed();
+
+            initSocketConnection();
+
+            const res = await fetch(`/api/dms/${targetUserId}`, { credentials: 'include' });
+            if (res.ok) {
+                const history = await res.json();
+                const historyBox = document.getElementById('dm-chat-history');
+                historyBox.innerHTML = '';
+                history.forEach(msg => appendDmToChat(msg));
+            }
+        }
+
+        function closeDmDrawer() {
+            document.getElementById('dm-modal').classList.add('hidden');
+            currentActiveDmUserId = null;
+        }
+
+        function appendDmToChat(msg) {
+            const historyBox = document.getElementById('dm-chat-history');
+            const isMine = currentUser && Number(msg.sender_id) === Number(currentUser.id);
+            
+            const bubble = document.createElement('div');
+            bubble.style.cssText = `
+                max-width: 80%; 
+                padding: 8px 12px; 
+                border-radius: 8px; 
+                align-self: ${isMine ? 'flex-end' : 'flex-start'}; 
+                background: ${isMine ? '#6366f1' : '#334155'}; 
+                color: #fff; 
+                font-size: 0.85rem;
+            `;
+
+            let mediaMarkup = '';
+            if (msg.media_url) {
+                if (msg.media_type === 'video') {
+                    mediaMarkup = `<video src="${msg.media_url}" controls style="max-width: 100%; border-radius: 4px; margin-top: 4px;"></video>`;
+                } else {
+                    mediaMarkup = `<img src="${msg.media_url}" style="max-width: 100%; border-radius: 4px; margin-top: 4px;" alt="Media">`;
+                }
+            }
+
+            bubble.innerHTML = `<div>${escapeHtml(msg.message || '')}</div>${mediaMarkup}`;
+            historyBox.appendChild(bubble);
+            historyBox.scrollTop = historyBox.scrollHeight;
+        }
+
+        function submitDirectMessage() {
+            const input = document.getElementById('dm-input-text');
+            const text = input.value.trim();
+
+            if ((!text && !selectedMediaUrl) || !currentActiveDmUserId) return;
+
+            socket.emit('send_direct_message', {
+                receiver_id: currentActiveDmUserId,
+                message: text,
+                media_url: selectedMediaUrl,
+                media_type: selectedMediaType,
+                is_18plus: false
+            });
+
+            input.value = '';
+            selectedMediaUrl = null;
+            selectedMediaType = 'image';
+            document.getElementById('giphy-picker').classList.add('hidden');
+        }
+
+        function toggleGiphyPicker() {
+            const picker = document.getElementById('giphy-picker');
+            picker.classList.toggle('hidden');
+            if (!picker.classList.contains('hidden')) {
+                searchGiphy('anime');
+            }
+        }
+
+        async function searchGiphy(query) {
+            if (!query) return;
+            try {
+                const res = await fetch(`https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(query)}&limit=9&rating=g`);
+                const data = await res.json();
+                
+                const resultsBox = document.getElementById('giphy-results');
+                resultsBox.innerHTML = '';
+                
+                if (data.data) {
+                    data.data.forEach(gif => {
+                        const imgUrl = gif.images.fixed_height_small.url;
+                        const img = document.createElement('img');
+                        img.src = imgUrl;
+                        img.style.cssText = 'width: 100%; height: 60px; object-fit: cover; cursor: pointer; border-radius: 4px;';
+                        img.onclick = () => {
+                            selectedMediaUrl = gif.images.original.url;
+                            selectedMediaType = 'gif';
+                            submitDirectMessage();
+                        };
+                        resultsBox.appendChild(img);
+                    });
+                }
+            } catch (e) {
+                console.error('Giphy API Error:', e);
+            }
+        }
+
+        async function handleGifUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (file.size > 10 * 1024 * 1024) {
+                alert('GIF files must be under 10MB.');
+                return;
+            }
+
+            try {
+                const base64Gif = await convertFileToBase64(file);
+                
+                const detectedNsfw = await scanNsfwOnClient(base64Gif);
+                if (detectedNsfw && currentUser && currentUser.is_minor) {
+                    alert('Explicit content detected in GIF. Minors cannot upload mature media.');
+                    return;
+                }
+
+                selectedMediaUrl = base64Gif;
+                selectedMediaType = 'gif';
+                submitDirectMessage();
+            } catch (err) {
+                alert('Failed to process GIF upload.');
+            }
+        }
+
+        async function handleVideoUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (file.size > 15 * 1024 * 1024) {
+                alert('Video files must be under 15MB.');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('upload_preset', CLOUDINARY_PRESET);
+
+            try {
+                const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (data.secure_url) {
+                    selectedMediaUrl = data.secure_url;
+                    selectedMediaType = 'video';
+                    submitDirectMessage();
+                } else {
+                    alert('Video upload failed.');
+                }
+            } catch (e) {
+                alert('Cloudinary upload error.');
+            }
+        }
 
         // --- PROFILE PICTURE & AVATAR LOGIC ---
 
@@ -344,7 +621,7 @@
             }
         }
 
-        // --- IMAGE STUDIO / MEME CANVA LOGIC ---
+        // --- MEME STUDIO LOGIC ---
 
         function handleImageSelect(event) {
             const file = event.target.files[0];
@@ -668,15 +945,17 @@
                     }
 
                     let followBtnHtml = '';
+                    let dmBtnHtml = '';
                     const targetId = msg.user_id;
 
-                    if (currentUser && !isOwner) {
-                        if (targetId) {
-                            const isFollowing = followingUserIds.includes(Number(targetId));
-                            const btnText = isFollowing ? 'Unfollow' : 'Follow';
-                            const btnClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
-                            followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${btnClass}">${btnText}</button>`;
-                        }
+                    if (currentUser && !isOwner && targetId) {
+                        const isFollowing = followingUserIds.includes(Number(targetId));
+                        const btnText = isFollowing ? 'Unfollow' : 'Follow';
+                        const btnClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
+                        followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${btnClass}">${btnText}</button>`;
+                        
+                        // Added btn-dm-card class and data-user-id for real-time notification badging
+                        dmBtnHtml = `<button onclick="openDmDrawer(${targetId}, '${escapeHtml(msg.name)}')" class="btn-small btn-dm-card" data-user-id="${targetId}" style="background: #0284c7; padding: 2px 8px;">💬 DM</button>`;
                     }
 
                     let nsfwBadgeHtml = '';
@@ -689,11 +968,12 @@
 
                     card.innerHTML = `
                         <div class="msg-header">
-                            <div style="display: flex; align-items: center; gap: 10px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
                                 <img src="${avatarUrl}" style="width: 32px; height: 32px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
                                 <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
                                 ${nsfwBadgeHtml}
                                 ${followBtnHtml}
+                                ${dmBtnHtml}
                             </div>
                             <div class="msg-meta">
                                 <span class="msg-date">${dateStr}</span>
@@ -706,6 +986,8 @@
 
                     messagesContainer.appendChild(card);
                 });
+
+                updateDmBadgesOnFeed();
             } catch (err) {
                 console.error('Error loading messages:', err);
                 messagesContainer.innerHTML = `<p class="error-msg">Failed to load posts from database.</p>`;
@@ -835,6 +1117,14 @@
         function convertFileToBase64(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
+
+                if (file.type === 'image/gif') {
+                    reader.onload = (event) => resolve(event.target.result);
+                    reader.onerror = (err) => reject(err);
+                    reader.readAsDataURL(file);
+                    return;
+                }
+
                 reader.readAsDataURL(file);
                 reader.onload = (event) => {
                     const img = new Image();

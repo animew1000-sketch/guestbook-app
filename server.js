@@ -1,8 +1,10 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
+const { Server } = require('socket.io');
 const db = require('./db');
 
 const app = express();
@@ -10,10 +12,11 @@ const PORT = process.env.PORT || 10000;
 
 app.set('trust proxy', 1);
 
+// Payload ceiling to preserve RAM on Render (512MB limit)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-app.use(session({
+const sessionMiddleware = session({
     name: 'anime_social_sid',
     secret: process.env.SESSION_SECRET || 'anime_social_secret_key',
     resave: false,
@@ -24,7 +27,9 @@ app.use(session({
         httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000 
     }
-}));
+});
+
+app.use(sessionMiddleware);
 
 app.use((req, res, next) => {
     if (req.session && req.session.user) {
@@ -34,6 +39,71 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+// 1. Create HTTP Server
+const server = http.createServer(app);
+
+// 2. Initialize Socket.io BEFORE using 'io'
+const io = new Server(server, {
+    maxHttpBufferSize: 1e6 // 1MB payload limit to prevent memory spikes
+});
+
+// 3. Share express-session safely with Socket.io
+io.use((socket, next) => {
+    if (socket.request) {
+        sessionMiddleware(socket.request, socket.request.res || {}, next);
+    } else {
+        next();
+    }
+});
+
+const onlineUsers = new Map(); // userId -> socketId
+
+io.on('connection', (socket) => {
+    const sessionUser = (socket.request && socket.request.session) ? socket.request.session.user : null;
+    if (!sessionUser) return;
+
+    onlineUsers.set(Number(sessionUser.id), socket.id);
+
+    socket.on('send_direct_message', async (data) => {
+        const { receiver_id, message, media_url, media_type, is_18plus } = data;
+        if (!receiver_id || (!message && !media_url)) return;
+
+        try {
+            const result = await db.query(
+                'INSERT INTO direct_messages (sender_id, receiver_id, message, media_url, media_type, is_18plus) VALUES (?, ?, ?, ?, ?, ?)',
+                [sessionUser.id, receiver_id, message || '', media_url || null, media_type || 'image', is_18plus ? 1 : 0]
+            );
+
+            const payload = {
+                id: result.insertId,
+                sender_id: sessionUser.id,
+                sender_username: sessionUser.username,
+                receiver_id: Number(receiver_id),
+                message,
+                media_url,
+                media_type,
+                is_18plus,
+                created_at: new Date()
+            };
+
+            const recipientSocketId = onlineUsers.get(Number(receiver_id));
+            if (recipientSocketId) {
+                io.to(recipientSocketId).emit('receive_direct_message', payload);
+            }
+
+            socket.emit('message_sent_confirm', payload);
+        } catch (err) {
+            console.error('Failed to process socket DM:', err);
+        }
+    });
+
+    socket.on('disconnect', () => {
+        if (sessionUser) {
+            onlineUsers.delete(Number(sessionUser.id));
+        }
+    });
+});
 
 function calculateAge(birthdateStr) {
     const today = new Date();
@@ -224,6 +294,30 @@ app.post('/api/verify-birthdate', async (req, res) => {
     }
 });
 
+// --- DIRECT MESSAGES REST API ---
+
+app.get('/api/dms/:userId', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const currentUserId = req.session.user.id;
+    const otherUserId = req.params.userId;
+
+    try {
+        const rows = await db.query(
+            `SELECT * FROM direct_messages 
+             WHERE (sender_id = ? AND receiver_id = ?) 
+                OR (sender_id = ? AND receiver_id = ?) 
+             ORDER BY id ASC LIMIT 50`,
+            [currentUserId, otherUserId, otherUserId, currentUserId]
+        );
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Database error loading DM history.' });
+    }
+});
+
 // --- FOLLOW / UNFOLLOW ROUTES ---
 
 app.get('/api/following', async (req, res) => {
@@ -235,7 +329,6 @@ app.get('/api/following', async (req, res) => {
         const followingIds = rows.map(r => Number(r.following_id));
         res.json(followingIds);
     } catch (err) {
-        console.error('Error fetching following list:', err);
         res.status(500).json({ error: 'Failed to fetch following list.' });
     }
 });
@@ -272,12 +365,11 @@ app.post('/api/follow/:id', async (req, res) => {
             return res.json({ message: 'Followed user successfully.' });
         }
     } catch (err) {
-        console.error('Follow toggle error:', err);
         res.status(500).json({ error: 'Database error toggling follow status.' });
     }
 });
 
-// --- MESSAGES & FEEDS ---
+// --- PUBLIC & FOLLOWING MESSAGES ---
 
 app.get('/api/messages', async (req, res) => {
     const feedType = req.query.feed || 'public';
@@ -328,7 +420,6 @@ app.get('/api/messages', async (req, res) => {
 
         res.json(rowsWithAvatars);
     } catch (err) {
-        console.error(err);
         res.status(500).json({ error: 'Failed to fetch messages.' });
     }
 });
@@ -359,7 +450,6 @@ app.post('/api/messages', async (req, res) => {
         );
         res.json({ message: 'Post created successfully!', is_18plus: detected18Plus });
     } catch (err) {
-        console.error('Database Error During Message Insert:', err);
         res.status(500).json({ error: `Failed to save post: ${err.message}` });
     }
 });
@@ -396,7 +486,7 @@ app.get('*', (req, res) => {
 
 db.getDb()
     .then(() => {
-        app.listen(PORT, () => {
+        server.listen(PORT, () => {
             console.log(`Server running on http://localhost:${PORT}`);
         });
     })

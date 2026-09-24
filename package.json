@@ -21,7 +21,11 @@
     "multer-storage-cloudinary": "^2.2.1",
     "mysql2": "^3.24.3",
     "nsfwjs": "^4.3.0",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.4",
+    "socket.io": "^4.8.3"
+  },
+  "overrides": {
+    "cookie": "^0.7.0"
   },
   "allowScripts": {
     "@tensorflow/tfjs-node@4.22.0": true
