@@ -86,7 +86,7 @@
     <div id="inbox-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
         <div style="background: #1e293b; border: 1px solid #0284c7; padding: 20px; border-radius: 12px; max-width: 380px; width: 100%;">
             <h3 style="color: #38bdf8; margin-top: 0; margin-bottom: 12px;">Direct Messages Inbox</h3>
-            <p style="color: #94a3b8; font-size: 0.85rem; margin-bottom: 12px;">Select a active user to view conversation:</p>
+            <p style="color: #94a3b8; font-size: 0.85rem; margin-bottom: 12px;">Select an active user to view conversation:</p>
             <div id="inbox-user-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 250px; overflow-y: auto; margin-bottom: 16px;"></div>
             <button onclick="closeInboxModal()" style="width: 100%; padding: 8px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Close</button>
         </div>
@@ -117,7 +117,7 @@
             </div>
             
             <div style="display: flex; gap: 6px;">
-                <input type="text" id="dm-input-text" placeholder="Type a message..." style="flex: 1; padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem;">
+                <input type="text" id="dm-input-text" placeholder="Type a message..." style="flex: 1; padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem;" onkeydown="if(event.key === 'Enter') submitDirectMessage()">
                 <button type="button" onclick="submitDirectMessage()" style="padding: 8px 14px; background: #6366f1; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Send</button>
             </div>
         </div>
@@ -318,7 +318,7 @@
             }
         }
 
-        // --- DIRECT MESSAGING, INBOX & NOTIFICATIONS ---
+        // --- DIRECT MESSAGING, INBOX & REAL-TIME SOCKET LISTENERS ---
 
         function openInboxModal() {
             document.getElementById('inbox-modal').classList.remove('hidden');
@@ -361,12 +361,19 @@
             if (!socket) {
                 socket = io();
                 
+                // Live update incoming DMs directly inside the open chat drawer
                 socket.on('receive_direct_message', (msg) => {
-                    if (currentActiveDmUserId && Number(msg.sender_id) === Number(currentActiveDmUserId)) {
+                    const isCurrentChatRecipient = currentActiveDmUserId && (
+                        Number(msg.sender_id) === Number(currentActiveDmUserId) || 
+                        Number(msg.receiver_id) === Number(currentActiveDmUserId)
+                    );
+
+                    if (isCurrentChatRecipient) {
                         appendDmToChat(msg);
                     }
                 });
 
+                // Live notification handling when drawer is closed or chatting with a different user
                 socket.on('dm_notification', (data) => {
                     if (!currentActiveDmUserId || Number(currentActiveDmUserId) !== Number(data.sender_id)) {
                         unreadDmSenders.add(Number(data.sender_id));
@@ -375,8 +382,16 @@
                     }
                 });
 
+                // Real-time confirmation for messages you send
                 socket.on('message_sent_confirm', (msg) => {
-                    appendDmToChat(msg);
+                    const isCurrentChat = currentActiveDmUserId && (
+                        Number(msg.receiver_id) === Number(currentActiveDmUserId) ||
+                        Number(msg.sender_id) === Number(currentActiveDmUserId)
+                    );
+
+                    if (isCurrentChat) {
+                        appendDmToChat(msg);
+                    }
                 });
             }
         }
