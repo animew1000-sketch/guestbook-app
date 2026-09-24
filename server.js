@@ -12,7 +12,6 @@ const PORT = process.env.PORT || 10000;
 
 app.set('trust proxy', 1);
 
-// Payload ceiling to preserve RAM on Render (512MB limit)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -40,15 +39,11 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 1. Create HTTP Server
 const server = http.createServer(app);
-
-// 2. Initialize Socket.io BEFORE using 'io'
 const io = new Server(server, {
-    maxHttpBufferSize: 1e6 // 1MB payload limit to prevent memory spikes
+    maxHttpBufferSize: 1e6
 });
 
-// 3. Share express-session safely with Socket.io
 io.use((socket, next) => {
     if (socket.request) {
         sessionMiddleware(socket.request, socket.request.res || {}, next);
@@ -57,28 +52,42 @@ io.use((socket, next) => {
     }
 });
 
-const onlineUsers = new Map(); // userId -> socketId
+const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
-    const sessionUser = (socket.request && socket.request.session) ? socket.request.session.user : null;
-    if (!sessionUser) return;
+    let sessionUser = (socket.request && socket.request.session) ? socket.request.session.user : null;
 
-    onlineUsers.set(Number(sessionUser.id), socket.id);
+    const registerUserSocket = (userId) => {
+        if (!userId) return;
+        const roomId = `user_${userId}`;
+        socket.join(roomId);
+        onlineUsers.set(Number(userId), socket.id);
+    };
+
+    if (sessionUser) {
+        registerUserSocket(sessionUser.id);
+    }
+
+    socket.on('identify_user', (userId) => {
+        registerUserSocket(userId);
+    });
 
     socket.on('send_direct_message', async (data) => {
+        const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id, message, media_url, media_type, is_18plus } = data;
-        if (!receiver_id || (!message && !media_url)) return;
+        
+        if (!receiver_id || (!message && !media_url) || !senderId) return;
 
         try {
             const result = await db.query(
                 'INSERT INTO direct_messages (sender_id, receiver_id, message, media_url, media_type, is_18plus) VALUES (?, ?, ?, ?, ?, ?)',
-                [sessionUser.id, receiver_id, message || '', media_url || null, media_type || 'image', is_18plus ? 1 : 0]
+                [senderId, receiver_id, message || '', media_url || null, media_type || 'image', is_18plus ? 1 : 0]
             );
 
             const payload = {
                 id: result.insertId,
-                sender_id: sessionUser.id,
-                sender_username: sessionUser.username,
+                sender_id: Number(senderId),
+                sender_username: sessionUser ? sessionUser.username : 'User',
                 receiver_id: Number(receiver_id),
                 message,
                 media_url,
@@ -87,11 +96,15 @@ io.on('connection', (socket) => {
                 created_at: new Date()
             };
 
-            const recipientSocketId = onlineUsers.get(Number(receiver_id));
-            if (recipientSocketId) {
-                io.to(recipientSocketId).emit('receive_direct_message', payload);
-            }
+            // Emit to recipient's private socket room
+            io.to(`user_${receiver_id}`).emit('receive_direct_message', payload);
+            io.to(`user_${receiver_id}`).emit('dm_notification', {
+                sender_id: Number(senderId),
+                sender_username: sessionUser ? sessionUser.username : 'User',
+                message: message || 'Sent a media attachment'
+            });
 
+            // Confirm back to sender
             socket.emit('message_sent_confirm', payload);
         } catch (err) {
             console.error('Failed to process socket DM:', err);
@@ -294,7 +307,7 @@ app.post('/api/verify-birthdate', async (req, res) => {
     }
 });
 
-// --- DIRECT MESSAGES REST API ---
+// --- REST DM & FOLLOW ROUTES ---
 
 app.get('/api/dms/:userId', async (req, res) => {
     if (!req.session || !req.session.user) {
@@ -317,8 +330,6 @@ app.get('/api/dms/:userId', async (req, res) => {
         res.status(500).json({ error: 'Database error loading DM history.' });
     }
 });
-
-// --- FOLLOW / UNFOLLOW ROUTES ---
 
 app.get('/api/following', async (req, res) => {
     if (!req.session || !req.session.user) {
@@ -356,20 +367,20 @@ app.post('/api/follow/:id', async (req, res) => {
                 'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
                 [followerId, followingId]
             );
-            return res.json({ message: 'Unfollowed user successfully.' });
+            return res.json({ message: 'Unfollowed user successfully.', following: false });
         } else {
             await db.query(
                 'INSERT INTO follows (follower_id, following_id) VALUES (?, ?)',
                 [followerId, followingId]
             );
-            return res.json({ message: 'Followed user successfully.' });
+            return res.json({ message: 'Followed user successfully.', following: true });
         }
     } catch (err) {
         res.status(500).json({ error: 'Database error toggling follow status.' });
     }
 });
 
-// --- PUBLIC & FOLLOWING MESSAGES ---
+// --- MESSAGES & REAL-TIME BROADCASTS ---
 
 app.get('/api/messages', async (req, res) => {
     const feedType = req.query.feed || 'public';
@@ -444,11 +455,26 @@ app.post('/api/messages', async (req, res) => {
     const authorName = req.session.user.username;
 
     try {
-        await db.query(
+        const result = await db.query(
             'INSERT INTO messages (user_id, name, message, image_url, is_18plus) VALUES (?, ?, ?, ?, ?)',
             [userId, authorName, message, image_url || null, detected18Plus]
         );
-        res.json({ message: 'Post created successfully!', is_18plus: detected18Plus });
+
+        const postPayload = {
+            id: result.insertId,
+            user_id: userId,
+            name: authorName,
+            message,
+            image_url: image_url || null,
+            is_18plus: detected18Plus,
+            created_at: new Date(),
+            avatar_url: req.session.user.avatar_url
+        };
+
+        // Broadcast post to all connected clients real-time
+        io.emit('new_public_post', postPayload);
+
+        res.json({ message: 'Post created successfully!', post: postPayload });
     } catch (err) {
         res.status(500).json({ error: `Failed to save post: ${err.message}` });
     }
@@ -474,6 +500,10 @@ app.delete('/api/messages/:id', async (req, res) => {
         }
 
         await db.query('DELETE FROM messages WHERE id = ?', [postId]);
+
+        // Broadcast post deletion to all connected clients real-time
+        io.emit('post_deleted', { id: Number(postId) });
+
         res.json({ message: 'Post deleted successfully.' });
     } catch (err) {
         res.status(500).json({ error: 'Database error during deletion.' });

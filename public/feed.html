@@ -82,7 +82,7 @@
         <button onclick="event.stopPropagation(); closeToast();" style="background: transparent; border: none; color: #94a3b8; font-size: 1rem; cursor: pointer; margin-left: 8px;">✕</button>
     </div>
 
-    <!-- Inbox / Contacts Selector Modal -->
+    <!-- Inbox Selector Modal -->
     <div id="inbox-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
         <div style="background: #1e293b; border: 1px solid #0284c7; padding: 20px; border-radius: 12px; max-width: 380px; width: 100%;">
             <h3 style="color: #38bdf8; margin-top: 0; margin-bottom: 12px;">Direct Messages Inbox</h3>
@@ -101,7 +101,6 @@
 
         <div id="dm-chat-history" style="flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;"></div>
 
-        <!-- Giphy Search Panel -->
         <div id="giphy-picker" class="hidden" style="height: 180px; background: #1e293b; border-top: 1px solid #334155; padding: 8px; overflow-y: auto;">
             <input type="text" id="giphy-search-input" placeholder="Search Giphy..." oninput="searchGiphy(this.value)" style="width: 100%; padding: 6px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 4px; margin-bottom: 6px; font-size: 0.8rem;">
             <div id="giphy-results" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;"></div>
@@ -241,14 +240,13 @@
             loadMessages();
         });
 
-        // --- CLIENT-SIDE NSFW CLASSIFIER (GRAPH MODEL + SKIN TONE ANALYSIS) ---
+        // --- CLIENT-SIDE NSFW CLASSIFIER ---
 
         async function scanNsfwOnClient(base64Img) {
             if (!base64Img) return false;
 
             try {
                 if (!clientNsfwModel) {
-                    console.log('Loading local NSFW Graph Model...');
                     clientNsfwModel = await nsfwjs.load('/model/', { type: 'graph' });
                 }
 
@@ -266,7 +264,6 @@
                             ctx.drawImage(img, 0, 0, 224, 224);
 
                             const predictions = await clientNsfwModel.classify(canvas);
-                            console.log('NSFW Predictions:', predictions);
 
                             const scores = {};
                             predictions.forEach(p => scores[p.className] = p.probability);
@@ -297,7 +294,6 @@
                             }
 
                             const skinRatio = skinPixelCount / totalPixels;
-                            console.log(`Skin ratio detected: ${(skinRatio * 100).toFixed(1)}%`);
 
                             const isExplicitML = (porn > 0.05 || hentai > 0.05 || sexy > 0.12 || nonSafeTotal > 0.15);
                             const isExplicitDrawing = (drawing > 0.30 && (hentai > 0.03 || sexy > 0.08 || skinRatio > 0.25));
@@ -305,7 +301,6 @@
 
                             resolve(isExplicitML || isExplicitDrawing || isExplicitSkinRatio);
                         } catch (err) {
-                            console.error('Classification execution error:', err);
                             resolve(false);
                         }
                     };
@@ -313,55 +308,40 @@
                     img.onerror = () => resolve(false);
                 });
             } catch (err) {
-                console.error('NSFW Scan Error:', err);
                 return false;
             }
         }
 
-        // --- DIRECT MESSAGING, INBOX & REAL-TIME SOCKET LISTENERS ---
-
-        function openInboxModal() {
-            document.getElementById('inbox-modal').classList.remove('hidden');
-            const listContainer = document.getElementById('inbox-user-list');
-            listContainer.innerHTML = '';
-
-            const userMap = new Map();
-            document.querySelectorAll('.msg-card').forEach(card => {
-                const author = card.querySelector('.msg-author')?.innerText;
-                const dmBtn = card.querySelector('.btn-dm-card');
-                const userId = dmBtn ? dmBtn.getAttribute('data-user-id') : null;
-
-                if (author && userId && currentUser && Number(userId) !== Number(currentUser.id)) {
-                    userMap.set(userId, author);
-                }
-            });
-
-            if (userMap.size === 0) {
-                listContainer.innerHTML = '<p style="color: #64748b; font-size: 0.85rem;">No active users found in feed.</p>';
-                return;
-            }
-
-            userMap.forEach((username, userId) => {
-                const row = document.createElement('div');
-                row.style.cssText = 'padding: 8px 12px; background: #0f172a; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border: 1px solid #334155;';
-                row.innerHTML = `<span style="color: #fff; font-weight: 600;">@${username}</span> <button class="btn-small" style="background: #0284c7;">Chat</button>`;
-                row.onclick = () => {
-                    closeInboxModal();
-                    openDmDrawer(userId, username);
-                };
-                listContainer.appendChild(row);
-            });
-        }
-
-        function closeInboxModal() {
-            document.getElementById('inbox-modal').classList.add('hidden');
-        }
+        // --- GLOBAL REAL-TIME WEBSOCKET EVENT LISTENERS ---
 
         function initSocketConnection() {
             if (!socket) {
                 socket = io();
                 
-                // Live update incoming DMs directly inside the open chat drawer
+                socket.on('connect', () => {
+                    if (currentUser && currentUser.id) {
+                        socket.emit('identify_user', currentUser.id);
+                    }
+                });
+
+                // 1. LIVE PUBLIC POSTS BROADCAST
+                socket.on('new_public_post', (post) => {
+                    if (currentFeedTab === 'public' || (currentFeedTab === 'following' && followingUserIds.includes(Number(post.user_id)))) {
+                        if (!post.is_18plus || show18Plus) {
+                            renderSinglePost(post, true);
+                        }
+                    }
+                });
+
+                // 2. LIVE POST DELETION BROADCAST
+                socket.on('post_deleted', (data) => {
+                    const postElem = document.getElementById(`post-card-${data.id}`);
+                    if (postElem) {
+                        postElem.remove();
+                    }
+                });
+
+                // 3. LIVE DIRECT MESSAGING BROADCAST
                 socket.on('receive_direct_message', (msg) => {
                     const isCurrentChatRecipient = currentActiveDmUserId && (
                         Number(msg.sender_id) === Number(currentActiveDmUserId) || 
@@ -373,7 +353,7 @@
                     }
                 });
 
-                // Live notification handling when drawer is closed or chatting with a different user
+                // 4. LIVE DM NOTIFICATIONS
                 socket.on('dm_notification', (data) => {
                     if (!currentActiveDmUserId || Number(currentActiveDmUserId) !== Number(data.sender_id)) {
                         unreadDmSenders.add(Number(data.sender_id));
@@ -382,7 +362,7 @@
                     }
                 });
 
-                // Real-time confirmation for messages you send
+                // 5. CONFIRMATION FOR MESSAGES SENT BY USER
                 socket.on('message_sent_confirm', (msg) => {
                     const isCurrentChat = currentActiveDmUserId && (
                         Number(msg.receiver_id) === Number(currentActiveDmUserId) ||
@@ -393,6 +373,8 @@
                         appendDmToChat(msg);
                     }
                 });
+            } else if (currentUser && currentUser.id) {
+                socket.emit('identify_user', currentUser.id);
             }
         }
 
@@ -429,6 +411,43 @@
                     btn.innerHTML = `💬 DM <span style="position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; background: #f43f5e; border-radius: 50%;"></span>`;
                 }
             });
+        }
+
+        function openInboxModal() {
+            document.getElementById('inbox-modal').classList.remove('hidden');
+            const listContainer = document.getElementById('inbox-user-list');
+            listContainer.innerHTML = '';
+
+            const userMap = new Map();
+            document.querySelectorAll('.msg-card').forEach(card => {
+                const author = card.querySelector('.msg-author')?.innerText;
+                const dmBtn = card.querySelector('.btn-dm-card');
+                const userId = dmBtn ? dmBtn.getAttribute('data-user-id') : null;
+
+                if (author && userId && currentUser && Number(userId) !== Number(currentUser.id)) {
+                    userMap.set(userId, author);
+                }
+            });
+
+            if (userMap.size === 0) {
+                listContainer.innerHTML = '<p style="color: #64748b; font-size: 0.85rem;">No active users found in feed.</p>';
+                return;
+            }
+
+            userMap.forEach((username, userId) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'padding: 8px 12px; background: #0f172a; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border: 1px solid #334155;';
+                row.innerHTML = `<span style="color: #fff; font-weight: 600;">@${username}</span> <button class="btn-small" style="background: #0284c7;">Chat</button>`;
+                row.onclick = () => {
+                    closeInboxModal();
+                    openDmDrawer(userId, username);
+                };
+                listContainer.appendChild(row);
+            });
+        }
+
+        function closeInboxModal() {
+            document.getElementById('inbox-modal').classList.add('hidden');
         }
 
         async function openDmDrawer(targetUserId, targetUsername) {
@@ -598,7 +617,7 @@
             }
         }
 
-        // --- PROFILE PICTURE & AVATAR LOGIC ---
+        // --- AVATAR & MEME STUDIO LOGIC ---
 
         function openAvatarModal() {
             if (!currentUser) return;
@@ -681,8 +700,6 @@
                 console.error('Save profile picture error:', err);
             }
         }
-
-        // --- MEME STUDIO LOGIC ---
 
         function handleImageSelect(event) {
             const file = event.target.files[0];
@@ -784,7 +801,7 @@
             closeMemeStudio();
         }
 
-        // --- FEED & USER SESSION LOGIC ---
+        // --- FEED DOM RENDERER & REAL-TIME INJECTION ---
 
         function updateNsfwBadge() {
             const badge = document.getElementById('nsfw-status-badge');
@@ -966,6 +983,89 @@
             loadMessages();
         }
 
+        function renderSinglePost(msg, prepend = false) {
+            const messagesContainer = document.getElementById('messages');
+            if (!messagesContainer) return;
+
+            const emptyMsg = messagesContainer.querySelector('.empty-msg');
+            if (emptyMsg) emptyMsg.remove();
+
+            if (document.getElementById(`post-card-${msg.id}`)) return;
+
+            const card = document.createElement('div');
+            card.className = 'msg-card';
+            card.id = `post-card-${msg.id}`;
+
+            let imageHtml = '';
+            if (msg.image_url) {
+                if (msg.is_18plus) {
+                    imageHtml = `
+                        <div class="nsfw-overlay-container">
+                            <img src="${msg.image_url}" class="msg-img blurred-image" onclick="this.classList.toggle('unblurred')" alt="18+ Content (Click to Reveal)">
+                        </div>
+                    `;
+                } else {
+                    imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
+                }
+            }
+
+            const isOwner = currentUser && (
+                (msg.user_id && Number(currentUser.id) === Number(msg.user_id)) ||
+                (currentUser.username === msg.name)
+            );
+
+            let deleteBtnHtml = '';
+            if (isOwner) {
+                deleteBtnHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
+            }
+
+            let followBtnHtml = '';
+            let dmBtnHtml = '';
+            const targetId = msg.user_id;
+
+            if (currentUser && !isOwner && targetId) {
+                const isFollowing = followingUserIds.includes(Number(targetId));
+                const btnText = isFollowing ? 'Unfollow' : 'Follow';
+                const btnClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
+                followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${btnClass}">${btnText}</button>`;
+                dmBtnHtml = `<button onclick="openDmDrawer(${targetId}, '${escapeHtml(msg.name)}')" class="btn-small btn-dm-card" data-user-id="${targetId}" style="background: #0284c7; padding: 2px 8px;">💬 DM</button>`;
+            }
+
+            let nsfwBadgeHtml = '';
+            if (msg.is_18plus) {
+                nsfwBadgeHtml = `<span style="background: #f43f5e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 700;">18+</span>`;
+            }
+
+            const avatarUrl = msg.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(msg.name || 'user')}`;
+            const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
+
+            card.innerHTML = `
+                <div class="msg-header">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <img src="${avatarUrl}" style="width: 32px; height: 32px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
+                        <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
+                        ${nsfwBadgeHtml}
+                        ${followBtnHtml}
+                        ${dmBtnHtml}
+                    </div>
+                    <div class="msg-meta">
+                        <span class="msg-date">${dateStr}</span>
+                        ${deleteBtnHtml}
+                    </div>
+                </div>
+                <div class="msg-text">${escapeHtml(msg.message || '')}</div>
+                ${imageHtml}
+            `;
+
+            if (prepend && messagesContainer.firstChild) {
+                messagesContainer.insertBefore(card, messagesContainer.firstChild);
+            } else {
+                messagesContainer.appendChild(card);
+            }
+
+            updateDmBadgesOnFeed();
+        }
+
         async function loadMessages() {
             const messagesContainer = document.getElementById('messages');
             if (!messagesContainer) return;
@@ -981,76 +1081,7 @@
                     return;
                 }
 
-                messages.forEach(msg => {
-                    const card = document.createElement('div');
-                    card.className = 'msg-card';
-
-                    let imageHtml = '';
-                    if (msg.image_url) {
-                        if (msg.is_18plus) {
-                            imageHtml = `
-                                <div class="nsfw-overlay-container">
-                                    <img src="${msg.image_url}" class="msg-img blurred-image" onclick="this.classList.toggle('unblurred')" alt="18+ Content (Click to Reveal)">
-                                </div>
-                            `;
-                        } else {
-                            imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
-                        }
-                    }
-
-                    const isOwner = currentUser && (
-                        (msg.user_id && Number(currentUser.id) === Number(msg.user_id)) ||
-                        (currentUser.username === msg.name)
-                    );
-
-                    let deleteBtnHtml = '';
-                    if (isOwner) {
-                        deleteBtnHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
-                    }
-
-                    let followBtnHtml = '';
-                    let dmBtnHtml = '';
-                    const targetId = msg.user_id;
-
-                    if (currentUser && !isOwner && targetId) {
-                        const isFollowing = followingUserIds.includes(Number(targetId));
-                        const btnText = isFollowing ? 'Unfollow' : 'Follow';
-                        const btnClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
-                        followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${btnClass}">${btnText}</button>`;
-                        
-                        dmBtnHtml = `<button onclick="openDmDrawer(${targetId}, '${escapeHtml(msg.name)}')" class="btn-small btn-dm-card" data-user-id="${targetId}" style="background: #0284c7; padding: 2px 8px;">💬 DM</button>`;
-                    }
-
-                    let nsfwBadgeHtml = '';
-                    if (msg.is_18plus) {
-                        nsfwBadgeHtml = `<span style="background: #f43f5e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 700;">18+</span>`;
-                    }
-
-                    const avatarUrl = msg.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(msg.name || 'user')}`;
-                    const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
-
-                    card.innerHTML = `
-                        <div class="msg-header">
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <img src="${avatarUrl}" style="width: 32px; height: 32px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
-                                <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
-                                ${nsfwBadgeHtml}
-                                ${followBtnHtml}
-                                ${dmBtnHtml}
-                            </div>
-                            <div class="msg-meta">
-                                <span class="msg-date">${dateStr}</span>
-                                ${deleteBtnHtml}
-                            </div>
-                        </div>
-                        <div class="msg-text">${escapeHtml(msg.message || '')}</div>
-                        ${imageHtml}
-                    `;
-
-                    messagesContainer.appendChild(card);
-                });
-
-                updateDmBadgesOnFeed();
+                messages.forEach(msg => renderSinglePost(msg, false));
             } catch (err) {
                 console.error('Error loading messages:', err);
                 messagesContainer.innerHTML = `<p class="error-msg">Failed to load posts from database.</p>`;
@@ -1081,13 +1112,10 @@
             if (!confirm('Are you sure you want to delete this post?')) return;
 
             try {
-                const res = await fetch(`/api/messages/${postId}`, {
+                await fetch(`/api/messages/${postId}`, {
                     method: 'DELETE',
                     credentials: 'include'
                 });
-                if (res.ok) {
-                    loadMessages();
-                }
             } catch (err) {
                 console.error('Delete error:', err);
             }
@@ -1164,7 +1192,6 @@
                     document.getElementById('meme-studio-btn').classList.add('hidden');
                     selectedOriginalImage = null;
                     editedBase64Image = null;
-                    loadMessages();
                 } else {
                     const data = await response.json();
                     alert(data.error || 'Failed to submit post.');
@@ -1244,6 +1271,7 @@
                 if (res.ok) {
                     const data = await res.json();
                     currentUser = data.user;
+                    initSocketConnection();
                 } else {
                     currentUser = null;
                 }
