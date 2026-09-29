@@ -133,19 +133,30 @@ function buildAvatarUrl(customUrl, style, seed) {
     return `https://api.dicebear.com/7.x/${selectedStyle}/svg?seed=${encodeURIComponent(selectedSeed)}`;
 }
 
-// --- AUTHENTICATION ROUTES ---
+// --- DEVICE LIMIT & AUTHENTICATION ROUTES ---
 
 app.post('/api/register', async (req, res) => {
-    const { username, email, password } = req.body;
+    const { username, email, password, device_id } = req.body;
     if (!username || !email || !password) {
         return res.status(400).json({ error: 'All fields are required.' });
     }
 
     try {
+        if (device_id) {
+            const existingAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
+            if (existingAccounts && existingAccounts.length >= 2) {
+                return res.status(403).json({
+                    error: 'Device account limit exceeded. Maximum 2 accounts allowed per computer.',
+                    device_limit_exceeded: true,
+                    accounts: existingAccounts
+                });
+            }
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
         await db.query(
-            'INSERT INTO users (username, email, password_hash, avatar_style, avatar_seed, title, badge) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [username, email, hashedPassword, 'bottts', username, 'Novice Adventurer', '⭐']
+            'INSERT INTO users (username, email, password_hash, avatar_style, avatar_seed, title, badge, device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [username, email, hashedPassword, 'bottts', username, 'Novice Adventurer', '⭐', device_id || null]
         );
         res.json({ message: 'User registered successfully!' });
     } catch (err) {
@@ -157,7 +168,7 @@ app.post('/api/register', async (req, res) => {
 });
 
 app.post('/api/login', async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, device_id } = req.body;
     if (!email || !password) {
         return res.status(400).json({ error: 'Email and password required.' });
     }
@@ -172,6 +183,22 @@ app.post('/api/login', async (req, res) => {
         const match = await bcrypt.compare(password, user.password_hash);
         if (!match) {
             return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+
+        if (device_id && user.device_id !== device_id) {
+            await db.query('UPDATE users SET device_id = ? WHERE id = ?', [device_id, user.id]);
+            user.device_id = device_id;
+        }
+
+        if (device_id) {
+            const connectedAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
+            if (connectedAccounts && connectedAccounts.length > 2) {
+                return res.status(403).json({
+                    error: 'Device account limit exceeded. Delete extra accounts to log in.',
+                    device_limit_exceeded: true,
+                    accounts: connectedAccounts
+                });
+            }
         }
 
         let isMinor = Boolean(user.is_minor);
@@ -200,7 +227,8 @@ app.post('/api/login', async (req, res) => {
             custom_avatar_url: customAvatarUrl,
             avatar_url: buildAvatarUrl(customAvatarUrl, avatarStyle, avatarSeed),
             title: user.title || 'Novice Adventurer',
-            badge: user.badge || '⭐'
+            badge: user.badge || '⭐',
+            device_id: user.device_id
         };
         
         req.session.save(err => {
@@ -212,8 +240,73 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-app.get('/api/me', (req, res) => {
+// DEVICE ACCOUNT MANAGEMENT & DELETION
+
+app.get('/api/device-accounts', async (req, res) => {
+    const deviceId = req.query.device_id;
+    if (!deviceId) {
+        return res.status(400).json({ error: 'Device ID required.' });
+    }
+
+    try {
+        const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
+        res.json({ accounts, count: accounts.length });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch device accounts.' });
+    }
+});
+
+app.post('/api/delete-device-account', async (req, res) => {
+    const { target_user_id, password, device_id } = req.body;
+    if (!target_user_id || !password || !device_id) {
+        return res.status(400).json({ error: 'Target account ID, password, and device ID are required.' });
+    }
+
+    try {
+        const users = await db.query('SELECT * FROM users WHERE id = ? AND device_id = ?', [target_user_id, device_id]);
+        if (!users || users.length === 0) {
+            return res.status(404).json({ error: 'Account not found on this device.' });
+        }
+
+        const user = users[0];
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match) {
+            return res.status(401).json({ error: 'Incorrect password for account deletion.' });
+        }
+
+        await db.query('DELETE FROM direct_messages WHERE sender_id = ? OR receiver_id = ?', [target_user_id, target_user_id]);
+        await db.query('DELETE FROM follows WHERE follower_id = ? OR following_id = ?', [target_user_id, target_user_id]);
+        await db.query('DELETE FROM messages WHERE user_id = ?', [target_user_id]);
+        await db.query('DELETE FROM users WHERE id = ?', [target_user_id]);
+
+        const remainingAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
+
+        res.json({
+            message: `Account @${user.username} deleted successfully.`,
+            remaining_count: remainingAccounts.length,
+            accounts: remainingAccounts,
+            can_proceed: remainingAccounts.length <= 2
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete account.' });
+    }
+});
+
+app.get('/api/me', async (req, res) => {
     if (req.session && req.session.user) {
+        const deviceId = req.session.user.device_id;
+        if (deviceId) {
+            const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
+            if (accounts.length > 2) {
+                req.session.destroy();
+                res.clearCookie('anime_social_sid');
+                return res.status(403).json({
+                    error: 'Device limit exceeded.',
+                    device_limit_exceeded: true,
+                    accounts
+                });
+            }
+        }
         res.json({ user: req.session.user });
     } else {
         res.status(401).json({ error: 'Not logged in' });
@@ -228,7 +321,6 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
-// PROFILE UPDATE WITH CUSTOM TITLE & BADGE
 app.post('/api/avatar', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to update profile.' });

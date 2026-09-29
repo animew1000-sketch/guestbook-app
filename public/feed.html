@@ -69,6 +69,16 @@
             background: #334155;
             border: 1px solid #a855f7;
         }
+        .device-account-card {
+            background: #0f172a;
+            border: 1px solid #ef4444;
+            border-radius: 8px;
+            padding: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
     </style>
 </head>
 <body>
@@ -143,6 +153,27 @@
 
         <!-- Feed List -->
         <div id="messages" class="messages"></div>
+    </div>
+
+    <!-- Mandatory Account Deletion Modal (Limit: 2 Accounts Per Computer) -->
+    <div id="device-limit-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.95); display: flex; justify-content: center; align-items: center; z-index: 5000; padding: 20px;">
+        <div style="background: #1e293b; border: 2px solid #ef4444; padding: 24px; border-radius: 12px; max-width: 480px; width: 100%; text-align: center;">
+            <h2 style="color: #ef4444; margin-top: 0; margin-bottom: 8px;">⚠️ Device Limit Exceeded</h2>
+            <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 16px;">
+                This computer has <strong id="device-account-count" style="color: #ef4444;">0</strong> accounts registered. A maximum of <strong>2 accounts per computer</strong> is allowed. You must delete accounts until only 2 remain to continue using the website.
+            </p>
+
+            <div id="device-account-list" style="max-height: 220px; overflow-y: auto; margin-bottom: 16px; text-align: left;"></div>
+
+            <div id="delete-confirmation-box" class="hidden" style="background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #ef4444; margin-bottom: 16px;">
+                <p id="delete-confirm-label" style="color: #f87171; font-size: 0.8rem; margin: 0 0 8px 0; font-weight: 600;">Confirm Account Deletion</p>
+                <input type="password" id="delete-account-password" placeholder="Enter account password to confirm..." style="width: 100%; padding: 8px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem; margin-bottom: 8px;">
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                    <button onclick="confirmAccountDeletion()" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Confirm Permanent Delete</button>
+                    <button onclick="cancelAccountDeletion()" style="padding: 6px 12px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Cancel</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Incoming DM Toast Notification -->
@@ -296,6 +327,7 @@
         let selectedMediaUrl = null;
         let selectedMediaType = 'image';
         let unreadDmSenders = new Set();
+        let targetDeleteUserId = null;
 
         const GIPHY_API_KEY = 'YOUR_GIPHY_API_KEY';
         const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUDINARY_CLOUD_NAME';
@@ -307,10 +339,21 @@
             '✨', '💫', '💥', '🥇', '🏆', '🧿', '🍀', '🍓', '☕', '🗡️'
         ];
 
+        function getOrCreateDeviceId() {
+            let deviceId = localStorage.getItem('anime_social_device_id');
+            if (!deviceId) {
+                deviceId = 'dev_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                localStorage.setItem('anime_social_device_id', deviceId);
+            }
+            return deviceId;
+        }
+
         document.addEventListener('DOMContentLoaded', async () => {
             if (window.tf && tf.ENV) {
                 tf.ENV.set('PROD', true);
             }
+
+            getOrCreateDeviceId();
 
             const urlParams = new URLSearchParams(window.location.search);
             const tabParam = urlParams.get('tab');
@@ -324,10 +367,105 @@
             if (followingBtn) followingBtn.classList.toggle('active', currentFeedTab === 'following');
 
             renderEmojiGrid();
+            await checkDeviceAccounts();
             await checkUserSession();
             await fetchFollowingList();
             loadMessages();
         });
+
+        async function checkDeviceAccounts() {
+            const deviceId = getOrCreateDeviceId();
+            try {
+                const res = await fetch(`/api/device-accounts?device_id=${deviceId}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.count > 2) {
+                        displayDeviceLimitModal(data.accounts);
+                    }
+                }
+            } catch (e) {
+                console.error('Device account check error:', e);
+            }
+        }
+
+        function displayDeviceLimitModal(accounts) {
+            const modal = document.getElementById('device-limit-modal');
+            const countElem = document.getElementById('device-account-count');
+            const listElem = document.getElementById('device-account-list');
+
+            countElem.innerText = accounts.length;
+            listElem.innerHTML = '';
+
+            accounts.forEach(acc => {
+                const card = document.createElement('div');
+                card.className = 'device-account-card';
+                card.innerHTML = `
+                    <div>
+                        <div style="color: #fff; font-weight: 700; font-size: 0.9rem;">@${escapeHtml(acc.username)}</div>
+                        <div style="color: #64748b; font-size: 0.75rem;">${escapeHtml(acc.email)}</div>
+                    </div>
+                    <button onclick="promptDeleteDeviceAccount(${acc.id}, '${escapeHtml(acc.username)}')" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Delete Account</button>
+                `;
+                listElem.appendChild(card);
+            });
+
+            modal.classList.remove('hidden');
+        }
+
+        function promptDeleteDeviceAccount(userId, username) {
+            targetDeleteUserId = userId;
+            document.getElementById('delete-confirm-label').innerText = `Confirm password to delete @${username}:`;
+            document.getElementById('delete-confirmation-box').classList.remove('hidden');
+            document.getElementById('delete-account-password').focus();
+        }
+
+        function cancelAccountDeletion() {
+            targetDeleteUserId = null;
+            document.getElementById('delete-account-password').value = '';
+            document.getElementById('delete-confirmation-box').classList.add('hidden');
+        }
+
+        async function confirmAccountDeletion() {
+            if (!targetDeleteUserId) return;
+
+            const password = document.getElementById('delete-account-password').value;
+            const deviceId = getOrCreateDeviceId();
+
+            if (!password) {
+                alert('Please enter the password for this account to confirm deletion.');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/delete-device-account', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        target_user_id: targetDeleteUserId,
+                        password,
+                        device_id: deviceId
+                    })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    alert(data.message);
+                    cancelAccountDeletion();
+
+                    if (data.can_proceed) {
+                        document.getElementById('device-limit-modal').classList.add('hidden');
+                        window.location.reload();
+                    } else {
+                        displayDeviceLimitModal(data.accounts);
+                    }
+                } else {
+                    alert(data.error || 'Failed to delete account.');
+                }
+            } catch (err) {
+                alert('Connection error deleting account.');
+            }
+        }
 
         function renderEmojiGrid() {
             const grid = document.getElementById('emoji-badge-grid');
