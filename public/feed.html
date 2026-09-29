@@ -10,6 +10,66 @@
     <!-- TensorFlow & NSFWJS -->
     <script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
+    
+    <style>
+        .spoiler-overlay {
+            filter: blur(12px);
+            transition: filter 0.3s ease;
+            cursor: pointer;
+            user-select: none;
+        }
+        .spoiler-overlay.unblurred {
+            filter: none !important;
+        }
+        .spoiler-container {
+            position: relative;
+            background: #0f172a;
+            border: 1px dashed #f59e0b;
+            border-radius: 6px;
+            padding: 8px;
+            margin-top: 6px;
+        }
+        .spoiler-badge {
+            background: #f59e0b;
+            color: #000;
+            font-size: 0.7rem;
+            font-weight: 800;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+        .user-title-badge {
+            font-size: 0.75rem;
+            color: #c084fc;
+            background: rgba(168, 85, 247, 0.15);
+            border: 1px solid rgba(168, 85, 247, 0.4);
+            padding: 1px 6px;
+            border-radius: 12px;
+        }
+        .emoji-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 6px;
+            max-height: 120px;
+            overflow-y: auto;
+            background: #0f172a;
+            padding: 8px;
+            border: 1px solid #334155;
+            border-radius: 6px;
+        }
+        .emoji-option {
+            font-size: 1.2rem;
+            padding: 6px;
+            text-align: center;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background 0.2s ease;
+        }
+        .emoji-option:hover, .emoji-option.selected {
+            background: #334155;
+            border: 1px solid #a855f7;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -20,11 +80,17 @@
         <div id="auth-bar" class="auth-bar">
             <div style="display: flex; align-items: center; gap: 10px;">
                 <img id="user-avatar-preview" src="https://api.dicebear.com/7.x/bottts/svg?seed=guest" style="width: 36px; height: 36px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
-                <span id="user-status">Not logged in</span>
+                <div style="display: flex; flex-direction: column;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span id="user-status">Not logged in</span>
+                        <span id="user-badge-header" style="font-size: 1.1rem;"></span>
+                    </div>
+                    <span id="user-title-header" style="font-size: 0.7rem; color: #a855f7;"></span>
+                </div>
             </div>
             <div style="display: flex; gap: 8px;">
                 <button id="inbox-btn" class="btn-small hidden" style="background: #0284c7;" onclick="openInboxModal()">💬 Messages</button>
-                <button id="avatar-btn" class="btn-small hidden" style="background: #a855f7;" onclick="openAvatarModal()">Edit Profile Picture</button>
+                <button id="avatar-btn" class="btn-small hidden" style="background: #a855f7;" onclick="openAvatarModal()">Edit Profile</button>
                 <button id="auth-btn" class="btn-small" onclick="handleAuthButtonClick()">Login / Register</button>
             </div>
         </div>
@@ -54,12 +120,19 @@
                 <button type="button" id="meme-studio-btn" class="btn-small hidden" style="background: #a855f7; white-space: nowrap;" onclick="openMemeStudio()">✨ Open Image Studio</button>
             </div>
             
-            <label id="post-18plus-wrapper" style="display: flex; align-items: center; gap: 8px; color: #f43f5e; font-size: 0.85rem; cursor: pointer;">
-                <input type="checkbox" id="post-is-18plus">
-                Mark as 18+ / Mature Content
-            </label>
+            <div style="display: flex; gap: 16px; margin-top: 6px;">
+                <label id="post-18plus-wrapper" style="display: flex; align-items: center; gap: 8px; color: #f43f5e; font-size: 0.85rem; cursor: pointer;">
+                    <input type="checkbox" id="post-is-18plus">
+                    Mark as 18+ / Mature Content
+                </label>
 
-            <button type="submit" id="submit-btn">Submit Post</button>
+                <label style="display: flex; align-items: center; gap: 8px; color: #f59e0b; font-size: 0.85rem; cursor: pointer;">
+                    <input type="checkbox" id="post-is-spoiler">
+                    ⚠️ Mark as Spoiler
+                </label>
+            </div>
+
+            <button type="submit" id="submit-btn" style="margin-top: 10px;">Submit Post</button>
         </form>
 
         <!-- Feed Tabs -->
@@ -122,19 +195,27 @@
         </div>
     </div>
 
-    <!-- Avatar Customizer Modal -->
+    <!-- Enhanced Profile Modal with Custom Title & Emoji Badge Picker -->
     <div id="avatar-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
-        <div style="background: #1e293b; border: 1px solid #a855f7; padding: 24px; border-radius: 12px; max-width: 400px; width: 100%; text-align: center;">
-            <h3 style="color: #c084fc; margin-bottom: 16px;">Set Profile Picture</h3>
+        <div style="background: #1e293b; border: 1px solid #a855f7; padding: 24px; border-radius: 12px; max-width: 420px; width: 100%; text-align: center;">
+            <h3 style="color: #c084fc; margin-bottom: 16px;">Customize Profile & Badges</h3>
             
-            <img id="avatar-modal-preview" src="" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #a855f7; background: #0f172a; margin-bottom: 16px; object-fit: cover;" alt="Preview">
+            <img id="avatar-modal-preview" src="" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #a855f7; background: #0f172a; margin-bottom: 12px; object-fit: cover;" alt="Preview">
             
             <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; text-align: left;">
+                <label style="color: #c084fc; font-size: 0.8rem; font-weight: 600;">Custom Title</label>
+                <input type="text" id="profile-title-input" placeholder="Type your custom title..." maxlength="40" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+
+                <label style="color: #c084fc; font-size: 0.8rem; font-weight: 600;">Select Emoji Badge</label>
+                <div class="emoji-grid" id="emoji-badge-grid"></div>
+
+                <hr style="border-color: #334155; margin: 4px 0;">
+
                 <label style="color: #c084fc; font-size: 0.8rem; font-weight: 600;">Option 1: Upload Custom Photo</label>
                 <input type="file" id="custom-avatar-file" accept="image/*" onchange="handleCustomAvatarSelect(event)" style="padding: 6px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.8rem;">
                 <button type="button" id="clear-custom-avatar-btn" class="btn-small hidden" style="background: #ef4444; margin-top: -4px;" onclick="clearCustomAvatarUpload()">Clear Custom Photo</button>
 
-                <hr style="border-color: #334155; margin: 6px 0;">
+                <hr style="border-color: #334155; margin: 4px 0;">
 
                 <label style="color: #818cf8; font-size: 0.8rem; font-weight: 600;">Option 2: Generate Avatar</label>
                 <select id="avatar-style-select" onchange="updateAvatarModalPreview()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
@@ -147,7 +228,7 @@
             </div>
 
             <div style="display: flex; gap: 10px; justify-content: center;">
-                <button onclick="saveAvatarSelection()" style="padding: 8px 16px; background: #a855f7; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Save Profile Picture</button>
+                <button onclick="saveAvatarSelection()" style="padding: 8px 16px; background: #a855f7; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Save Profile</button>
                 <button onclick="closeAvatarModal()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
             </div>
         </div>
@@ -206,6 +287,7 @@
         let pendingCustomAvatarBase64 = null;
         let selectedOriginalImage = null;
         let editedBase64Image = null;
+        let selectedBadgeEmoji = '⭐';
 
         let clientNsfwModel = null;
 
@@ -218,6 +300,12 @@
         const GIPHY_API_KEY = 'YOUR_GIPHY_API_KEY';
         const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUDINARY_CLOUD_NAME';
         const CLOUDINARY_PRESET = 'YOUR_CLOUDINARY_UNSIGNED_PRESET';
+
+        const EMOJI_BADGES = [
+            '⭐', '🔥', '⚡', '👑', '🎮', '⚔️', '🛡️', '💎', '🚀', '🌟', 
+            '🌸', '🍜', '⛩️', '🔮', '🎭', '👾', '🎨', '🎯', '🎧', '📜',
+            '✨', '💫', '💥', '🥇', '🏆', '🧿', '🍀', '🍓', '☕', '🗡️'
+        ];
 
         document.addEventListener('DOMContentLoaded', async () => {
             if (window.tf && tf.ENV) {
@@ -235,93 +323,100 @@
             if (publicBtn) publicBtn.classList.toggle('active', currentFeedTab === 'public');
             if (followingBtn) followingBtn.classList.toggle('active', currentFeedTab === 'following');
 
+            renderEmojiGrid();
             await checkUserSession();
             await fetchFollowingList();
             loadMessages();
         });
 
-        // --- CLIENT-SIDE NSFW CLASSIFIER ---
+        function renderEmojiGrid() {
+            const grid = document.getElementById('emoji-badge-grid');
+            if (!grid) return;
+            grid.innerHTML = '';
 
-     async function scanNsfwOnClient(base64Img) {
-    if (!base64Img) return false;
-
-    try {
-        if (!clientNsfwModel) {
-            console.log('Loading local NSFW Graph Model...');
-            clientNsfwModel = await nsfwjs.load('/model/', { type: 'graph' });
+            EMOJI_BADGES.forEach(emoji => {
+                const item = document.createElement('div');
+                item.className = `emoji-option ${selectedBadgeEmoji === emoji ? 'selected' : ''}`;
+                item.innerText = emoji;
+                item.onclick = () => {
+                    selectedBadgeEmoji = emoji;
+                    document.querySelectorAll('.emoji-option').forEach(el => el.classList.remove('selected'));
+                    item.classList.add('selected');
+                };
+                grid.appendChild(item);
+            });
         }
 
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.src = base64Img;
+        // --- CLIENT-SIDE NSFW CLASSIFIER ---
 
-            img.onload = async () => {
-                try {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = 224;
-                    canvas.height = 224;
-                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                    ctx.drawImage(img, 0, 0, 224, 224);
+        async function scanNsfwOnClient(base64Img) {
+            if (!base64Img) return false;
 
-                    const predictions = await clientNsfwModel.classify(canvas);
-                    console.log('NSFW Predictions:', predictions);
-
-                    const scores = {};
-                    predictions.forEach(p => scores[p.className] = p.probability);
-
-                    const hentai = scores['Hentai'] || 0;
-                    const porn = scores['Porn'] || 0;
-                    const sexy = scores['Sexy'] || 0;
-                    const drawing = scores['Drawing'] || 0;
-
-                    // 1. Explicit AI Nudity (Photographic or Uncensored 3D/Anime)
-                    const isExplicitNudity = (porn > 0.15 || hentai > 0.15);
-
-                    // 2. Artistic / Fantasy Female Nudity (Catches painted breasts/bra-less figures)
-                    // If it's a drawing/painting with notable 'Sexy' or mild 'Hentai' probability
-                    const isArtisticNudity = (drawing > 0.30 && (sexy > 0.18 || hentai > 0.04));
-
-                    // 3. Pixel scan verifying exposed skin across variable lighting conditions
-                    const imageData = ctx.getImageData(0, 0, 224, 224).data;
-                    let skinPixelCount = 0;
-                    const totalPixels = 224 * 224;
-
-                    for (let i = 0; i < imageData.length; i += 4) {
-                        const r = imageData[i];
-                        const g = imageData[i + 1];
-                        const b = imageData[i + 2];
-
-                        // Expanded color range to account for blue/cool studio lighting and pale tones
-                        const isBareSkin = (
-                            (r > 80 && g > 30 && b > 15 && (Math.max(r, g, b) - Math.min(r, g, b) > 10) && r > b) ||
-                            (r > 180 && g > 170 && b > 150 && Math.abs(r - g) <= 30)
-                        );
-
-                        if (isBareSkin) skinPixelCount++;
-                    }
-
-                    const skinRatio = skinPixelCount / totalPixels;
-
-                    // 4. Exposed body ratio indicating missing top/bottom garments
-                    const isLackingGarments = (skinRatio > 0.25 && (sexy > 0.15 || hentai > 0.05 || porn > 0.05));
-
-                    resolve(isExplicitNudity || isArtisticNudity || isLackingGarments);
-                } catch (err) {
-                    console.error('Classification execution error:', err);
-                    resolve(false);
+            try {
+                if (!clientNsfwModel) {
+                    clientNsfwModel = await nsfwjs.load('/model/', { type: 'graph' });
                 }
-            };
 
-            img.onerror = () => resolve(false);
-        });
-    } catch (err) {
-        console.error('NSFW Scan Error:', err);
-        return false;
-    }
-}
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = base64Img;
 
-        // --- GLOBAL REAL-TIME WEBSOCKET EVENT LISTENERS ---
+                    img.onload = async () => {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = 224;
+                            canvas.height = 224;
+                            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                            ctx.drawImage(img, 0, 0, 224, 224);
+
+                            const predictions = await clientNsfwModel.classify(canvas);
+
+                            const scores = {};
+                            predictions.forEach(p => scores[p.className] = p.probability);
+
+                            const hentai = scores['Hentai'] || 0;
+                            const porn = scores['Porn'] || 0;
+                            const sexy = scores['Sexy'] || 0;
+                            const drawing = scores['Drawing'] || 0;
+
+                            const isExplicitNudity = (porn > 0.15 || hentai > 0.15);
+                            const isArtisticNudity = (drawing > 0.30 && (sexy > 0.18 || hentai > 0.04));
+
+                            const imageData = ctx.getImageData(0, 0, 224, 224).data;
+                            let skinPixelCount = 0;
+                            const totalPixels = 224 * 224;
+
+                            for (let i = 0; i < imageData.length; i += 4) {
+                                const r = imageData[i];
+                                const g = imageData[i + 1];
+                                const b = imageData[i + 2];
+
+                                const isBareSkin = (
+                                    (r > 80 && g > 30 && b > 15 && (Math.max(r, g, b) - Math.min(r, g, b) > 10) && r > b) ||
+                                    (r > 180 && g > 170 && b > 150 && Math.abs(r - g) <= 30)
+                                );
+
+                                if (isBareSkin) skinPixelCount++;
+                            }
+
+                            const skinRatio = skinPixelCount / totalPixels;
+                            const isLackingGarments = (skinRatio > 0.25 && (sexy > 0.15 || hentai > 0.05 || porn > 0.05));
+
+                            resolve(isExplicitNudity || isArtisticNudity || isLackingGarments);
+                        } catch (err) {
+                            resolve(false);
+                        }
+                    };
+
+                    img.onerror = () => resolve(false);
+                });
+            } catch (err) {
+                return false;
+            }
+        }
+
+        // --- SOCKET CONNECTION & NOTIFICATIONS ---
 
         function initSocketConnection() {
             if (!socket) {
@@ -333,7 +428,6 @@
                     }
                 });
 
-                // 1. LIVE PUBLIC POSTS BROADCAST
                 socket.on('new_public_post', (post) => {
                     if (currentFeedTab === 'public' || (currentFeedTab === 'following' && followingUserIds.includes(Number(post.user_id)))) {
                         if (!post.is_18plus || show18Plus) {
@@ -342,7 +436,6 @@
                     }
                 });
 
-                // 2. LIVE POST DELETION BROADCAST
                 socket.on('post_deleted', (data) => {
                     const postElem = document.getElementById(`post-card-${data.id}`);
                     if (postElem) {
@@ -350,7 +443,6 @@
                     }
                 });
 
-                // 3. LIVE DIRECT MESSAGING BROADCAST
                 socket.on('receive_direct_message', (msg) => {
                     const isCurrentChatRecipient = currentActiveDmUserId && (
                         Number(msg.sender_id) === Number(currentActiveDmUserId) || 
@@ -362,7 +454,6 @@
                     }
                 });
 
-                // 4. LIVE DM NOTIFICATIONS
                 socket.on('dm_notification', (data) => {
                     if (!currentActiveDmUserId || Number(currentActiveDmUserId) !== Number(data.sender_id)) {
                         unreadDmSenders.add(Number(data.sender_id));
@@ -371,7 +462,6 @@
                     }
                 });
 
-                // 5. CONFIRMATION FOR MESSAGES SENT BY USER
                 socket.on('message_sent_confirm', (msg) => {
                     const isCurrentChat = currentActiveDmUserId && (
                         Number(msg.receiver_id) === Number(currentActiveDmUserId) ||
@@ -626,12 +716,15 @@
             }
         }
 
-        // --- AVATAR & MEME STUDIO LOGIC ---
+        // --- AVATAR & PROFILE BADGES MODAL LOGIC ---
 
         function openAvatarModal() {
             if (!currentUser) return;
             document.getElementById('avatar-style-select').value = currentUser.avatar_style || 'bottts';
             document.getElementById('avatar-seed-input').value = currentUser.avatar_seed || currentUser.username;
+            document.getElementById('profile-title-input').value = currentUser.title || 'Novice Adventurer';
+            selectedBadgeEmoji = currentUser.badge || '⭐';
+
             pendingCustomAvatarBase64 = currentUser.custom_avatar_url || null;
             
             if (pendingCustomAvatarBase64) {
@@ -640,6 +733,7 @@
                 document.getElementById('clear-custom-avatar-btn').classList.add('hidden');
             }
 
+            renderEmojiGrid();
             updateAvatarModalPreview();
             document.getElementById('avatar-modal').classList.remove('hidden');
         }
@@ -679,6 +773,7 @@
         async function saveAvatarSelection() {
             const style = document.getElementById('avatar-style-select').value;
             const seed = document.getElementById('avatar-seed-input').value || currentUser.username;
+            const customTitle = document.getElementById('profile-title-input').value;
 
             try {
                 const res = await fetch('/api/avatar', {
@@ -688,7 +783,9 @@
                     body: JSON.stringify({ 
                         avatar_style: style, 
                         avatar_seed: seed,
-                        custom_avatar_url: pendingCustomAvatarBase64 
+                        custom_avatar_url: pendingCustomAvatarBase64,
+                        title: customTitle,
+                        badge: selectedBadgeEmoji
                     })
                 });
                 const data = await res.json();
@@ -698,17 +795,21 @@
                     currentUser.avatar_seed = seed;
                     currentUser.custom_avatar_url = pendingCustomAvatarBase64;
                     currentUser.avatar_url = data.avatar_url;
+                    currentUser.title = data.title;
+                    currentUser.badge = data.badge;
                     
-                    document.getElementById('user-avatar-preview').src = data.avatar_url;
+                    updateUIState();
                     closeAvatarModal();
                     loadMessages();
                 } else {
-                    alert(data.error || 'Failed to save profile picture.');
+                    alert(data.error || 'Failed to save profile.');
                 }
             } catch (err) {
-                console.error('Save profile picture error:', err);
+                console.error('Save profile error:', err);
             }
         }
+
+        // --- MEME STUDIO LOGIC ---
 
         function handleImageSelect(event) {
             const file = event.target.files[0];
@@ -810,7 +911,7 @@
             closeMemeStudio();
         }
 
-        // --- FEED DOM RENDERER & REAL-TIME INJECTION ---
+        // --- FEED RENDERER WITH SPOILERS, BADGES & TITLES ---
 
         function updateNsfwBadge() {
             const badge = document.getElementById('nsfw-status-badge');
@@ -927,6 +1028,8 @@
             const inboxBtn = document.getElementById('inbox-btn');
             const userStatus = document.getElementById('user-status');
             const userAvatarPreview = document.getElementById('user-avatar-preview');
+            const userBadgeHeader = document.getElementById('user-badge-header');
+            const userTitleHeader = document.getElementById('user-title-header');
             const postForm = document.getElementById('post-form');
             const loginNotice = document.getElementById('login-notice');
             const post18plusWrapper = document.getElementById('post-18plus-wrapper');
@@ -934,6 +1037,9 @@
             if (currentUser) {
                 if (userStatus) userStatus.innerText = `@${currentUser.username}`;
                 if (userAvatarPreview && currentUser.avatar_url) userAvatarPreview.src = currentUser.avatar_url;
+                if (userBadgeHeader) userBadgeHeader.innerText = currentUser.badge || '⭐';
+                if (userTitleHeader) userTitleHeader.innerText = currentUser.title || 'Novice Adventurer';
+
                 if (authBtn) authBtn.innerText = 'Logout';
                 if (avatarBtn) avatarBtn.classList.remove('hidden');
                 if (inboxBtn) inboxBtn.classList.remove('hidden');
@@ -949,6 +1055,9 @@
             } else {
                 if (userStatus) userStatus.innerText = 'Not logged in';
                 if (userAvatarPreview) userAvatarPreview.src = 'https://api.dicebear.com/7.x/bottts/svg?seed=guest';
+                if (userBadgeHeader) userBadgeHeader.innerText = '';
+                if (userTitleHeader) userTitleHeader.innerText = '';
+
                 if (authBtn) authBtn.innerText = 'Login / Register';
                 if (avatarBtn) avatarBtn.classList.add('hidden');
                 if (inboxBtn) inboxBtn.classList.add('hidden');
@@ -1013,9 +1122,28 @@
                             <img src="${msg.image_url}" class="msg-img blurred-image" onclick="this.classList.toggle('unblurred')" alt="18+ Content (Click to Reveal)">
                         </div>
                     `;
+                } else if (msg.is_spoiler) {
+                    imageHtml = `
+                        <div class="spoiler-container" onclick="this.querySelector('.spoiler-overlay').classList.toggle('unblurred')">
+                            <div style="font-size: 0.75rem; color: #f59e0b; margin-bottom: 4px;">⚠️ Spoiler Image (Click to reveal)</div>
+                            <img src="${msg.image_url}" class="msg-img spoiler-overlay" alt="Spoiler Content">
+                        </div>
+                    `;
                 } else {
                     imageHtml = `<img src="${msg.image_url}" class="msg-img" alt="Uploaded Content">`;
                 }
+            }
+
+            let textHtml = escapeHtml(msg.message || '');
+            if (msg.is_spoiler) {
+                textHtml = `
+                    <div class="spoiler-container" onclick="this.querySelector('.spoiler-overlay').classList.toggle('unblurred')">
+                        <div style="font-size: 0.75rem; color: #f59e0b; margin-bottom: 4px;">⚠️ Spoiler Text (Click to reveal)</div>
+                        <div class="spoiler-overlay">${textHtml}</div>
+                    </div>
+                `;
+            } else {
+                textHtml = `<div class="msg-text">${textHtml}</div>`;
             }
 
             const isOwner = currentUser && (
@@ -1045,15 +1173,25 @@
                 nsfwBadgeHtml = `<span style="background: #f43f5e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 700;">18+</span>`;
             }
 
+            let spoilerBadgeHtml = '';
+            if (msg.is_spoiler) {
+                spoilerBadgeHtml = `<span class="spoiler-badge">Spoiler</span>`;
+            }
+
             const avatarUrl = msg.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(msg.name || 'user')}`;
             const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
+            const userBadge = msg.badge || '⭐';
+            const userTitle = msg.title || 'Novice Adventurer';
 
             card.innerHTML = `
                 <div class="msg-header">
-                    <div style="display: flex; align-items: center; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                         <img src="${avatarUrl}" style="width: 32px; height: 32px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
                         <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
+                        <span>${userBadge}</span>
+                        <span class="user-title-badge">${escapeHtml(userTitle)}</span>
                         ${nsfwBadgeHtml}
+                        ${spoilerBadgeHtml}
                         ${followBtnHtml}
                         ${dmBtnHtml}
                     </div>
@@ -1062,7 +1200,7 @@
                         ${deleteBtnHtml}
                     </div>
                 </div>
-                <div class="msg-text">${escapeHtml(msg.message || '')}</div>
+                ${textHtml}
                 ${imageHtml}
             `;
 
@@ -1142,6 +1280,7 @@
             const contentInput = document.getElementById('post-content').value;
             const imageFileInput = document.getElementById('post-image').files[0];
             let is18PlusCheckbox = document.getElementById('post-is-18plus').checked;
+            let isSpoilerCheckbox = document.getElementById('post-is-spoiler').checked;
             const submitBtn = document.getElementById('submit-btn');
 
             let base64Image = editedBase64Image;
@@ -1190,7 +1329,8 @@
                     body: JSON.stringify({ 
                         message: contentInput, 
                         image_url: base64Image,
-                        is_18plus: is18PlusCheckbox 
+                        is_18plus: is18PlusCheckbox,
+                        is_spoiler: isSpoilerCheckbox
                     })
                 });
 
@@ -1198,6 +1338,7 @@
                     document.getElementById('post-content').value = '';
                     document.getElementById('post-image').value = '';
                     document.getElementById('post-is-18plus').checked = false;
+                    document.getElementById('post-is-spoiler').checked = false;
                     document.getElementById('meme-studio-btn').classList.add('hidden');
                     selectedOriginalImage = null;
                     editedBase64Image = null;
