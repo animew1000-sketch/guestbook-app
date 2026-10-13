@@ -120,10 +120,10 @@
             <a href="auth.html" class="login-notice-btn" style="display: inline-block; text-decoration: none;">Login / Register</a>
         </div>
 
-        <!-- Create Post Section -->
+        <!-- Create Post Section (removed "required" from post-content so images can be sent alone) -->
         <form id="post-form" class="hidden" onsubmit="handlePostSubmit(event)">
             <input type="text" id="post-author" placeholder="Your Name or Display Name" readonly required>
-            <textarea id="post-content" rows="3" placeholder="Write a public update..." required></textarea>
+            <textarea id="post-content" rows="3" placeholder="Write a public update... (Optional if attaching an image)"></textarea>
             
             <div style="display: flex; gap: 8px; align-items: center;">
                 <input type="file" id="post-image" accept="image/png, image/jpeg, image/gif, image/webp" onchange="handleImageSelect(event)">
@@ -1272,16 +1272,19 @@
                 }
             }
 
-            let textHtml = escapeHtml(msg.message || '');
-            if (msg.is_spoiler) {
-                textHtml = `
-                    <div class="spoiler-container" onclick="this.querySelector('.spoiler-overlay').classList.toggle('unblurred')">
-                        <div style="font-size: 0.75rem; color: #f59e0b; margin-bottom: 4px;">⚠️ Spoiler Text (Click to reveal)</div>
-                        <div class="spoiler-overlay">${textHtml}</div>
-                    </div>
-                `;
-            } else {
-                textHtml = `<div class="msg-text">${textHtml}</div>`;
+            let textHtml = '';
+            if (msg.message && msg.message.trim() !== '') {
+                const safeMessage = escapeHtml(msg.message);
+                if (msg.is_spoiler) {
+                    textHtml = `
+                        <div class="spoiler-container" onclick="this.querySelector('.spoiler-overlay').classList.toggle('unblurred')">
+                            <div style="font-size: 0.75rem; color: #f59e0b; margin-bottom: 4px;">⚠️ Spoiler Text (Click to reveal)</div>
+                            <div class="spoiler-overlay">${safeMessage}</div>
+                        </div>
+                    `;
+                } else {
+                    textHtml = `<div class="msg-text">${safeMessage}</div>`;
+                }
             }
 
             const isOwner = currentUser && (
@@ -1406,7 +1409,7 @@
             }
         }
 
-        // --- SUBMIT POST HANDLER ---
+        // --- SUBMIT POST HANDLER (UPDATED FOR IMAGE-ONLY SUBMISSION) ---
 
         async function handlePostSubmit(event) {
             event.preventDefault();
@@ -1415,7 +1418,7 @@
                 return;
             }
 
-            const contentInput = document.getElementById('post-content').value;
+            const contentInput = document.getElementById('post-content').value.trim();
             const imageFileInput = document.getElementById('post-image').files[0];
             let is18PlusCheckbox = document.getElementById('post-is-18plus').checked;
             let isSpoilerCheckbox = document.getElementById('post-is-spoiler').checked;
@@ -1429,8 +1432,15 @@
                     base64Image = await convertFileToBase64(imageFileInput);
                 } catch (err) {
                     alert('Failed to process image file.');
+                    submitBtn.innerText = 'Submit Post';
                     return;
                 }
+            }
+
+            // Ensure either text content or an image exists before posting
+            if (!contentInput && !base64Image) {
+                alert('Please enter a message or select an image to post.');
+                return;
             }
 
             if (base64Image) {

@@ -465,14 +465,17 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
+// POST CREATION FIX: Allows image without requiring a text message
 app.post('/api/messages', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to post.' });
     }
 
     const { message, image_url, is_18plus, is_spoiler } = req.body;
-    if (!message) {
-        return res.status(400).json({ error: 'Post content is required.' });
+    
+    // Check that either a message OR an image is attached
+    if ((!message || message.trim() === '') && !image_url) {
+        return res.status(400).json({ error: 'A post must contain text or an image.' });
     }
 
     let detected18Plus = Boolean(is_18plus);
@@ -488,14 +491,14 @@ app.post('/api/messages', async (req, res) => {
     try {
         const result = await db.query(
             'INSERT INTO messages (user_id, name, message, image_url, is_18plus, is_spoiler) VALUES (?, ?, ?, ?, ?, ?)',
-            [userId, authorName, message, image_url || null, detected18Plus, detectedSpoiler]
+            [userId, authorName, message || '', image_url || null, detected18Plus, detectedSpoiler]
         );
 
         const postPayload = {
             id: result.insertId,
             user_id: userId,
             name: authorName,
-            message,
+            message: message || '',
             image_url: image_url || null,
             is_18plus: detected18Plus,
             is_spoiler: detectedSpoiler,
