@@ -100,7 +100,6 @@ io.on('connection', (socket) => {
         if (!receiver_id || (!message && !media_url) || !senderId) return;
 
         try {
-            // Check if blocked
             const blocks = await db.query(
                 'SELECT id FROM blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)',
                 [receiver_id, senderId, senderId, receiver_id]
@@ -166,7 +165,6 @@ function buildAvatarUrl(customUrl, style, seed) {
     return `https://api.dicebear.com/7.x/${selectedStyle}/svg?seed=${encodeURIComponent(selectedSeed)}`;
 }
 
-// --- AUTOMATED KEYWORD & TEXT FILTERING ---
 const PROFANITY_LIST = ['badword1', 'badword2', 'hate speech', 'spamlink'];
 const SPOILER_KEYWORDS = ['spoiler:', 'dies in chapter', 'ending leaked', 'final battle winner'];
 
@@ -177,7 +175,6 @@ function applyTextFilters(text) {
     let autoSpoiler = false;
     let isCensored = false;
 
-    // Filter profanity
     PROFANITY_LIST.forEach(word => {
         const regex = new RegExp(`\\b${word}\\b`, 'gi');
         if (regex.test(sanitizedText)) {
@@ -186,7 +183,6 @@ function applyTextFilters(text) {
         }
     });
 
-    // Detect spoiler triggers
     SPOILER_KEYWORDS.forEach(keyword => {
         if (sanitizedText.toLowerCase().includes(keyword.toLowerCase())) {
             autoSpoiler = true;
@@ -491,6 +487,7 @@ app.post('/api/reports', async (req, res) => {
     }
 });
 
+// TOGGLE BLOCK / UNBLOCK
 app.post('/api/block/:target_id', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to block users.' });
@@ -507,24 +504,56 @@ app.post('/api/block/:target_id', async (req, res) => {
         const existing = await db.query('SELECT id FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [blockerId, blockedId]);
         if (existing && existing.length > 0) {
             await db.query('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [blockerId, blockedId]);
-            return res.json({ blocked: false, message: 'User unblocked.' });
+            return res.json({ blocked: false, message: 'User unblocked successfully.' });
         } else {
             await db.query('INSERT INTO blocks (blocker_id, blocked_id) VALUES (?, ?)', [blockerId, blockedId]);
-            return res.json({ blocked: true, message: 'User blocked.' });
+            return res.json({ blocked: true, message: 'User blocked successfully.' });
         }
     } catch (err) {
         res.status(500).json({ error: 'Failed to update block state.' });
     }
 });
 
+// EXPLICIT UNBLOCK ROUTE
+app.post('/api/unblock/:target_id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to unblock users.' });
+    }
+
+    const blockerId = req.session.user.id;
+    const blockedId = req.params.target_id;
+
+    try {
+        await db.query('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [blockerId, blockedId]);
+        res.json({ blocked: false, message: 'User unblocked successfully.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to unblock user.' });
+    }
+});
+
+// FETCH BLOCKED USERS WITH DETAILS
 app.get('/api/blocks', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.json([]);
     }
 
     try {
-        const rows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [req.session.user.id]);
-        res.json(rows.map(r => Number(r.blocked_id)));
+        const rows = await db.query(
+            `SELECT users.id, users.username, users.email, users.avatar_style, users.avatar_seed, users.custom_avatar_url 
+             FROM blocks 
+             INNER JOIN users ON blocks.blocked_id = users.id 
+             WHERE blocks.blocker_id = ?`,
+            [req.session.user.id]
+        );
+
+        const list = rows.map(r => ({
+            id: Number(r.id),
+            username: r.username,
+            email: r.email,
+            avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.username)
+        }));
+
+        res.json(list);
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch block list.' });
     }
@@ -574,7 +603,6 @@ app.get('/api/messages', async (req, res) => {
 
         let rows = await db.query(query, params);
 
-        // Filter out blocked users' posts
         if (currentUserId) {
             const blockedUserRows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [currentUserId]);
             const blockedIds = blockedUserRows.map(b => Number(b.blocked_id));
@@ -606,7 +634,6 @@ app.post('/api/messages', async (req, res) => {
         return res.status(400).json({ error: 'A post must contain text or an image.' });
     }
 
-    // Apply Automated Keyword & Text Filtering
     const filterResult = applyTextFilters(message);
     const finalMessage = filterResult.sanitizedText;
     let detectedSpoiler = Boolean(is_spoiler) || filterResult.autoSpoiler;
