@@ -165,7 +165,7 @@
     <div id="report-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 4000;">
         <div style="background: #1e293b; border: 1px solid #f59e0b; padding: 20px; border-radius: 12px; max-width: 400px; width: 100%;">
             <h3 style="color: #f59e0b; margin-top: 0; margin-bottom: 8px;">🚩 Report Content</h3>
-            <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 12px;">Help keep our community safe by selecting a reason for this report:</p>
+            <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 12px;">Select a reason for reporting:</p>
             
             <select id="report-reason-select" style="width: 100%; padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; margin-bottom: 16px;">
                 <option value="Hate Speech or Harassment">Hate Speech or Harassment</option>
@@ -186,30 +186,20 @@
         <div style="background: #1e293b; border: 2px solid #ef4444; padding: 24px; border-radius: 12px; max-width: 480px; width: 100%; text-align: center;">
             <h2 style="color: #ef4444; margin-top: 0; margin-bottom: 8px;">⚠️ Device Limit Exceeded</h2>
             <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 16px;">
-                This computer has <strong id="device-account-count" style="color: #ef4444;">0</strong> accounts registered. A maximum of <strong>2 accounts per computer</strong> is allowed. You must delete accounts until only 2 remain to continue using the website.
+                This computer has <strong id="device-account-count" style="color: #ef4444;">0</strong> accounts registered. A maximum of <strong>2 accounts per computer</strong> is allowed. Delete accounts until only 2 remain to continue.
             </p>
 
             <div id="device-account-list" style="max-height: 220px; overflow-y: auto; margin-bottom: 16px; text-align: left;"></div>
 
             <div id="delete-confirmation-box" class="hidden" style="background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #ef4444; margin-bottom: 16px;">
                 <p id="delete-confirm-label" style="color: #f87171; font-size: 0.8rem; margin: 0 0 8px 0; font-weight: 600;">Confirm Account Deletion</p>
-                <input type="password" id="delete-account-password" placeholder="Enter account password to confirm..." style="width: 100%; padding: 8px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem; margin-bottom: 8px;">
+                <input type="password" id="delete-account-password" placeholder="Enter account password..." style="width: 100%; padding: 8px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem; margin-bottom: 8px;">
                 <div style="display: flex; gap: 8px; justify-content: flex-end;">
                     <button onclick="confirmAccountDeletion()" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Confirm Permanent Delete</button>
                     <button onclick="cancelAccountDeletion()" style="padding: 6px 12px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Cancel</button>
                 </div>
             </div>
         </div>
-    </div>
-
-    <!-- Incoming DM Toast Notification -->
-    <div id="dm-toast" class="hidden" style="position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #818cf8; color: #fff; padding: 12px 18px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); display: flex; align-items: center; gap: 12px; z-index: 3000; cursor: pointer;">
-        <span style="font-size: 1.2rem;">💬</span>
-        <div>
-            <div id="dm-toast-title" style="font-weight: 700; font-size: 0.85rem; color: #818cf8;">New Message</div>
-            <div id="dm-toast-body" style="font-size: 0.8rem; color: #cbd5e1;">You have a new message!</div>
-        </div>
-        <button onclick="event.stopPropagation(); closeToast();" style="background: transparent; border: none; color: #94a3b8; font-size: 1rem; cursor: pointer; margin-left: 8px;">✕</button>
     </div>
 
     <!-- Direct Messaging Drawer -->
@@ -255,11 +245,52 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             getOrCreateDeviceId();
+            
+            // ORDER IS CRITICAL: Validate user session FIRST so profile status updates immediately
             await checkUserSession();
+            
+            await checkDeviceAccounts();
             await fetchBlockedList();
             await fetchFollowingList();
             loadMessages();
         });
+
+        async function checkUserSession() {
+            try {
+                const res = await fetch('/api/me', { 
+                    method: 'GET',
+                    headers: { 'Cache-Control': 'no-cache' },
+                    credentials: 'include' 
+                });
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    currentUser = data.user;
+                    initSocketConnection();
+                } else {
+                    currentUser = null;
+                }
+            } catch (e) {
+                console.error('Session check error:', e);
+                currentUser = null;
+            }
+            updateUIState();
+        }
+
+        async function checkDeviceAccounts() {
+            const deviceId = getOrCreateDeviceId();
+            try {
+                const res = await fetch(`/api/device-accounts?device_id=${deviceId}`, { credentials: 'include' });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.count > 2) {
+                        displayDeviceLimitModal(data.accounts);
+                    }
+                }
+            } catch (e) {
+                console.error('Device check error:', e);
+            }
+        }
 
         async function fetchBlockedList() {
             if (!currentUser) return;
@@ -273,6 +304,18 @@
             }
         }
 
+        async function fetchFollowingList() {
+            if (!currentUser) return;
+            try {
+                const res = await fetch('/api/following', { credentials: 'include' });
+                if (res.ok) {
+                    followingUserIds = await res.json();
+                }
+            } catch (e) {
+                followingUserIds = [];
+            }
+        }
+
         function initSocketConnection() {
             if (!socket) {
                 socket = io();
@@ -283,7 +326,6 @@
                     }
                 });
 
-                // LIVE TYPING INDICATORS
                 socket.on('dm_typing_indicator', (data) => {
                     if (currentActiveDmUserId && Number(data.sender_id) === Number(currentActiveDmUserId)) {
                         const statusElem = document.getElementById('dm-typing-status');
@@ -335,7 +377,6 @@
             }
         }
 
-        // TYPING EMITTER HANDLER
         function handleDmTypingInput() {
             if (!socket || !currentActiveDmUserId) return;
 
@@ -347,53 +388,36 @@
             }, 1500);
         }
 
-        // REPORTING & BLOCKING MODAL HANDLERS
-        function openReportModal(postId, userId) {
-            activeReportPostId = postId;
-            activeReportUserId = userId;
-            document.getElementById('report-modal').classList.remove('hidden');
-        }
+        function updateUIState() {
+            const authBtn = document.getElementById('auth-btn');
+            const avatarBtn = document.getElementById('avatar-btn');
+            const inboxBtn = document.getElementById('inbox-btn');
+            const userStatus = document.getElementById('user-status');
+            const userAvatarPreview = document.getElementById('user-avatar-preview');
+            const postForm = document.getElementById('post-form');
+            const loginNotice = document.getElementById('login-notice');
 
-        function closeReportModal() {
-            activeReportPostId = null;
-            activeReportUserId = null;
-            document.getElementById('report-modal').classList.add('hidden');
-        }
+            if (currentUser) {
+                if (userStatus) userStatus.innerText = `@${currentUser.username}`;
+                if (userAvatarPreview && currentUser.avatar_url) userAvatarPreview.src = currentUser.avatar_url;
 
-        async function submitReport() {
-            const reason = document.getElementById('report-reason-select').value;
-            try {
-                const res = await fetch('/api/report', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
-                    body: JSON.stringify({
-                        target_post_id: activeReportPostId,
-                        target_user_id: activeReportUserId,
-                        reason
-                    })
-                });
-                const data = await res.json();
-                alert(data.message || data.error);
-                closeReportModal();
-            } catch (err) {
-                alert('Failed to submit report.');
-            }
-        }
+                if (authBtn) authBtn.innerText = 'Logout';
+                if (avatarBtn) avatarBtn.classList.remove('hidden');
+                if (inboxBtn) inboxBtn.classList.remove('hidden');
+                if (postForm) postForm.classList.remove('hidden');
+                if (loginNotice) loginNotice.classList.add('hidden');
+                
+                const authorInput = document.getElementById('post-author');
+                if (authorInput) authorInput.value = currentUser.username;
+            } else {
+                if (userStatus) userStatus.innerText = 'Not logged in';
+                if (userAvatarPreview) userAvatarPreview.src = 'https://api.dicebear.com/7.x/bottts/svg?seed=guest';
 
-        async function toggleBlockUser(targetUserId) {
-            if (!confirm('Are you sure you want to block/unblock this user?')) return;
-            try {
-                const res = await fetch(`/api/block/${targetUserId}`, {
-                    method: 'POST',
-                    credentials: 'include'
-                });
-                const data = await res.json();
-                alert(data.message);
-                await fetchBlockedList();
-                loadMessages();
-            } catch (err) {
-                alert('Failed to update block state.');
+                if (authBtn) authBtn.innerText = 'Login / Register';
+                if (avatarBtn) avatarBtn.classList.add('hidden');
+                if (inboxBtn) inboxBtn.classList.add('hidden');
+                if (postForm) postForm.classList.add('hidden');
+                if (loginNotice) loginNotice.classList.remove('hidden');
             }
         }
 
@@ -509,57 +533,23 @@
             }
         }
 
-        function submitDirectMessage() {
-            const input = document.getElementById('dm-input-text');
-            const text = input.value.trim();
-
-            if (!text || !currentActiveDmUserId) return;
-
-            socket.emit('dm_stop_typing', { receiver_id: currentActiveDmUserId });
-
-            socket.emit('send_direct_message', {
-                receiver_id: currentActiveDmUserId,
-                message: text,
-                media_url: null,
-                media_type: 'image',
-                is_18plus: false
-            });
-
-            input.value = '';
+        function handleAuthButtonClick() {
+            if (currentUser) {
+                handleLogout();
+            } else {
+                window.location.href = 'auth.html';
+            }
         }
 
-        function appendDmToChat(msg) {
-            const historyBox = document.getElementById('dm-chat-history');
-            const isMine = currentUser && Number(msg.sender_id) === Number(currentUser.id);
-            
-            const bubble = document.createElement('div');
-            bubble.style.cssText = `
-                max-width: 80%; 
-                padding: 8px 12px; 
-                border-radius: 8px; 
-                align-self: ${isMine ? 'flex-end' : 'flex-start'}; 
-                background: ${isMine ? '#6366f1' : '#334155'}; 
-                color: #fff; 
-                font-size: 0.85rem;
-            `;
-
-            bubble.innerHTML = `<div>${escapeHtml(msg.message || '')}</div>`;
-            historyBox.appendChild(bubble);
-            historyBox.scrollTop = historyBox.scrollHeight;
-        }
-
-        async function checkUserSession() {
+        async function handleLogout() {
             try {
-                const res = await fetch('/api/me', { credentials: 'include' });
-                if (res.ok) {
-                    const data = await res.json();
-                    currentUser = data.user;
-                    initSocketConnection();
-                } else {
-                    currentUser = null;
-                }
-            } catch (e) {
+                await fetch('/api/logout', { method: 'POST', credentials: 'include' });
                 currentUser = null;
+                followingUserIds = [];
+                updateUIState();
+                loadMessages();
+            } catch (err) {
+                console.error('Logout error:', err);
             }
         }
 
