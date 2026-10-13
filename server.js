@@ -10,13 +10,10 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Required for proxy servers like Clever Cloud to pass secure cookies
 app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-const isProduction = process.env.NODE_ENV === 'production';
 
 const sessionMiddleware = session({
     name: 'anime_social_sid',
@@ -24,8 +21,8 @@ const sessionMiddleware = session({
     resave: false,
     saveUninitialized: false,
     cookie: { 
-        secure: isProduction, 
-        sameSite: isProduction ? 'none' : 'lax',
+        secure: process.env.NODE_ENV === 'production', 
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000 
     }
@@ -55,26 +52,6 @@ io.use((socket, next) => {
 
 const onlineUsers = new Map();
 
-// Automated text moderation filters
-const BANNED_WORDS = ['slur1', 'hateword', 'explicitbadword'];
-const SPOILER_KEYWORDS = ['spoiler', 'dies', 'ending', 'death', 'final fight', 'plot twist'];
-
-function censorText(text) {
-    if (!text) return text;
-    let filteredText = text;
-    BANNED_WORDS.forEach(word => {
-        const regex = new RegExp(word, 'gi');
-        filteredText = filteredText.replace(regex, '***');
-    });
-    return filteredText;
-}
-
-function detectSpoilerKeywords(text) {
-    if (!text) return false;
-    const lower = text.toLowerCase();
-    return SPOILER_KEYWORDS.some(kw => lower.includes(kw));
-}
-
 io.on('connection', (socket) => {
     let sessionUser = (socket.request && socket.request.session) ? socket.request.session.user : null;
 
@@ -93,25 +70,29 @@ io.on('connection', (socket) => {
         registerUserSocket(userId);
     });
 
-    // Real-Time Typing Indicators
-    socket.on('dm_typing', (data) => {
+    // --- LIVE TYPING INDICATORS ---
+    socket.on('typing_start', (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
-        if (!data.receiver_id || !senderId) return;
-        io.to(`user_${data.receiver_id}`).emit('dm_typing_indicator', {
+        const { receiver_id } = data;
+        if (!receiver_id || !senderId) return;
+
+        io.to(`user_${receiver_id}`).emit('user_typing_start', {
             sender_id: Number(senderId),
-            is_typing: true
+            sender_username: sessionUser ? sessionUser.username : 'User'
         });
     });
 
-    socket.on('dm_stop_typing', (data) => {
+    socket.on('typing_stop', (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
-        if (!data.receiver_id || !senderId) return;
-        io.to(`user_${data.receiver_id}`).emit('dm_typing_indicator', {
-            sender_id: Number(senderId),
-            is_typing: false
+        const { receiver_id } = data;
+        if (!receiver_id || !senderId) return;
+
+        io.to(`user_${receiver_id}`).emit('user_typing_stop', {
+            sender_id: Number(senderId)
         });
     });
 
+    // --- DIRECT MESSAGES WITH BLOCK CHECK ---
     socket.on('send_direct_message', async (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id, message, media_url, media_type, is_18plus } = data;
@@ -119,14 +100,19 @@ io.on('connection', (socket) => {
         if (!receiver_id || (!message && !media_url) || !senderId) return;
 
         try {
-            const blocks = await db.query('SELECT * FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [receiver_id, senderId]);
-            if (blocks && blocks.length > 0) return;
+            // Check if blocked
+            const blocks = await db.query(
+                'SELECT id FROM blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)',
+                [receiver_id, senderId, senderId, receiver_id]
+            );
 
-            const safeMessage = censorText(message);
+            if (blocks && blocks.length > 0) {
+                return socket.emit('error_message', { error: 'Message cannot be delivered due to active user blocking.' });
+            }
 
             const result = await db.query(
                 'INSERT INTO direct_messages (sender_id, receiver_id, message, media_url, media_type, is_18plus) VALUES (?, ?, ?, ?, ?, ?)',
-                [senderId, receiver_id, safeMessage || '', media_url || null, media_type || 'image', is_18plus ? 1 : 0]
+                [senderId, receiver_id, message || '', media_url || null, media_type || 'image', is_18plus ? 1 : 0]
             );
 
             const payload = {
@@ -134,7 +120,7 @@ io.on('connection', (socket) => {
                 sender_id: Number(senderId),
                 sender_username: sessionUser ? sessionUser.username : 'User',
                 receiver_id: Number(receiver_id),
-                message: safeMessage,
+                message,
                 media_url,
                 media_type,
                 is_18plus,
@@ -145,7 +131,7 @@ io.on('connection', (socket) => {
             io.to(`user_${receiver_id}`).emit('dm_notification', {
                 sender_id: Number(senderId),
                 sender_username: sessionUser ? sessionUser.username : 'User',
-                message: safeMessage || 'Sent a media attachment'
+                message: message || 'Sent a media attachment'
             });
 
             socket.emit('message_sent_confirm', payload);
@@ -180,7 +166,37 @@ function buildAvatarUrl(customUrl, style, seed) {
     return `https://api.dicebear.com/7.x/${selectedStyle}/svg?seed=${encodeURIComponent(selectedSeed)}`;
 }
 
-// --- AUTHENTICATION & DEVICE LIMIT ROUTES ---
+// --- AUTOMATED KEYWORD & TEXT FILTERING ---
+const PROFANITY_LIST = ['badword1', 'badword2', 'hate speech', 'spamlink'];
+const SPOILER_KEYWORDS = ['spoiler:', 'dies in chapter', 'ending leaked', 'final battle winner'];
+
+function applyTextFilters(text) {
+    if (!text) return { sanitizedText: '', autoSpoiler: false, isCensored: false };
+
+    let sanitizedText = text;
+    let autoSpoiler = false;
+    let isCensored = false;
+
+    // Filter profanity
+    PROFANITY_LIST.forEach(word => {
+        const regex = new RegExp(`\\b${word}\\b`, 'gi');
+        if (regex.test(sanitizedText)) {
+            sanitizedText = sanitizedText.replace(regex, '****');
+            isCensored = true;
+        }
+    });
+
+    // Detect spoiler triggers
+    SPOILER_KEYWORDS.forEach(keyword => {
+        if (sanitizedText.toLowerCase().includes(keyword.toLowerCase())) {
+            autoSpoiler = true;
+        }
+    });
+
+    return { sanitizedText, autoSpoiler, isCensored };
+}
+
+// --- AUTH & DEVICE LIMITS ---
 
 app.post('/api/register', async (req, res) => {
     const { username, email, password, device_id } = req.body;
@@ -287,37 +303,6 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-app.get('/api/me', async (req, res) => {
-    if (req.session && req.session.user) {
-        const deviceId = req.session.user.device_id;
-        if (deviceId) {
-            const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
-            if (accounts.length > 2) {
-                req.session.destroy();
-                res.clearCookie('anime_social_sid');
-                return res.status(403).json({
-                    error: 'Device limit exceeded.',
-                    device_limit_exceeded: true,
-                    accounts
-                });
-            }
-        }
-        return res.json({ user: req.session.user });
-    } else {
-        return res.status(401).json({ error: 'Not logged in' });
-    }
-});
-
-app.post('/api/logout', (req, res) => {
-    req.session.destroy(err => {
-        if (err) return res.status(500).json({ error: 'Failed to logout' });
-        res.clearCookie('anime_social_sid');
-        res.json({ message: 'Logged out successfully' });
-    });
-});
-
-// --- DEVICE ACCOUNTS & REPORTING/BLOCKING ---
-
 app.get('/api/device-accounts', async (req, res) => {
     const deviceId = req.query.device_id;
     if (!deviceId) return res.status(400).json({ error: 'Device ID required.' });
@@ -333,7 +318,7 @@ app.get('/api/device-accounts', async (req, res) => {
 app.post('/api/delete-device-account', async (req, res) => {
     const { target_user_id, password, device_id } = req.body;
     if (!target_user_id || !password || !device_id) {
-        return res.status(400).json({ error: 'Target account ID, password, and device ID required.' });
+        return res.status(400).json({ error: 'Target account ID, password, and device ID are required.' });
     }
 
     try {
@@ -351,6 +336,8 @@ app.post('/api/delete-device-account', async (req, res) => {
         await db.query('DELETE FROM direct_messages WHERE sender_id = ? OR receiver_id = ?', [target_user_id, target_user_id]);
         await db.query('DELETE FROM follows WHERE follower_id = ? OR following_id = ?', [target_user_id, target_user_id]);
         await db.query('DELETE FROM messages WHERE user_id = ?', [target_user_id]);
+        await db.query('DELETE FROM reports WHERE reporter_id = ?', [target_user_id]);
+        await db.query('DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?', [target_user_id, target_user_id]);
         await db.query('DELETE FROM users WHERE id = ?', [target_user_id]);
 
         const remainingAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
@@ -366,45 +353,164 @@ app.post('/api/delete-device-account', async (req, res) => {
     }
 });
 
-app.post('/api/report', async (req, res) => {
+app.get('/api/me', async (req, res) => {
+    if (req.session && req.session.user) {
+        const deviceId = req.session.user.device_id;
+        if (deviceId) {
+            const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
+            if (accounts.length > 2) {
+                req.session.destroy();
+                res.clearCookie('anime_social_sid');
+                return res.status(403).json({
+                    error: 'Device limit exceeded.',
+                    device_limit_exceeded: true,
+                    accounts
+                });
+            }
+        }
+        res.json({ user: req.session.user });
+    } else {
+        res.status(401).json({ error: 'Not logged in' });
+    }
+});
+
+app.post('/api/logout', (req, res) => {
+    req.session.destroy(err => {
+        if (err) return res.status(500).json({ error: 'Failed to logout' });
+        res.clearCookie('anime_social_sid');
+        res.json({ message: 'Logged out successfully' });
+    });
+});
+
+app.post('/api/avatar', async (req, res) => {
     if (!req.session || !req.session.user) {
-        return res.status(401).json({ error: 'Must be logged in to report.' });
+        return res.status(401).json({ error: 'You must log in to update profile.' });
     }
 
-    const { target_post_id, target_user_id, reason } = req.body;
-    if (!reason) return res.status(400).json({ error: 'Reason for report is required.' });
+    const { avatar_style, avatar_seed, custom_avatar_url, title, badge } = req.body;
+    const style = avatar_style || 'bottts';
+    const seed = avatar_seed || req.session.user.username;
+    const customUrl = custom_avatar_url || null;
+    const userTitle = (title && title.trim().length > 0) ? title.trim().substring(0, 40) : 'Novice Adventurer';
+    const userBadge = badge || '⭐';
 
     try {
         await db.query(
-            'INSERT INTO reports (reporter_id, target_post_id, target_user_id, reason) VALUES (?, ?, ?, ?)',
-            [req.session.user.id, target_post_id || null, target_user_id || null, reason]
+            'UPDATE users SET avatar_style = ?, avatar_seed = ?, custom_avatar_url = ?, title = ?, badge = ? WHERE id = ?',
+            [style, seed, customUrl, userTitle, userBadge, req.session.user.id]
         );
-        res.json({ message: 'Report submitted successfully.' });
+
+        req.session.user.avatar_style = style;
+        req.session.user.avatar_seed = seed;
+        req.session.user.custom_avatar_url = customUrl;
+        req.session.user.avatar_url = buildAvatarUrl(customUrl, style, seed);
+        req.session.user.title = userTitle;
+        req.session.user.badge = userBadge;
+
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+            res.json({ 
+                message: 'Profile updated!', 
+                avatar_url: req.session.user.avatar_url,
+                title: userTitle,
+                badge: userBadge
+            });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update profile.' });
+    }
+});
+
+app.post('/api/verify-birthdate', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must be logged in.' });
+    }
+
+    const { birthdate } = req.body;
+    if (!birthdate) {
+        return res.status(400).json({ error: 'Birthdate is required.' });
+    }
+
+    const age = calculateAge(birthdate);
+    const isMinor = age < 18;
+    const ageVerified = !isMinor;
+    const userId = req.session.user.id;
+
+    try {
+        await db.query(
+            'UPDATE users SET birthdate = ?, is_minor = ?, age_verified = ? WHERE id = ?',
+            [birthdate, isMinor, ageVerified, userId]
+        );
+
+        req.session.user.birthdate = birthdate;
+        req.session.user.is_minor = isMinor;
+        req.session.user.age_verified = ageVerified;
+
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+
+            if (isMinor) {
+                return res.json({ 
+                    is_minor: true, 
+                    age_verified: false, 
+                    message: `Access denied. You are ${age} years old. 18+ content is locked until your 18th birthday.` 
+                });
+            }
+
+            res.json({ 
+                is_minor: false, 
+                age_verified: true, 
+                message: 'Birthdate verified! 18+ content access granted.' 
+            });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error storing birthdate.' });
+    }
+});
+
+// --- REPORTING & BLOCKING SYSTEM ---
+
+app.post('/api/reports', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to submit a report.' });
+    }
+
+    const { post_id, reason } = req.body;
+    if (!post_id || !reason) {
+        return res.status(400).json({ error: 'Post ID and reason are required.' });
+    }
+
+    try {
+        await db.query(
+            'INSERT INTO reports (reporter_id, post_id, reason) VALUES (?, ?, ?)',
+            [req.session.user.id, post_id, reason]
+        );
+        res.json({ message: 'Report submitted successfully. Thank you for keeping the community safe.' });
     } catch (err) {
         res.status(500).json({ error: 'Failed to submit report.' });
     }
 });
 
-app.post('/api/block/:userId', async (req, res) => {
+app.post('/api/block/:target_id', async (req, res) => {
     if (!req.session || !req.session.user) {
-        return res.status(401).json({ error: 'Must be logged in to block users.' });
+        return res.status(401).json({ error: 'You must log in to block users.' });
     }
 
-    const targetUserId = req.params.userId;
-    const currentUserId = req.session.user.id;
+    const blockerId = req.session.user.id;
+    const blockedId = req.params.target_id;
 
-    if (Number(targetUserId) === Number(currentUserId)) {
+    if (Number(blockerId) === Number(blockedId)) {
         return res.status(400).json({ error: 'You cannot block yourself.' });
     }
 
     try {
-        const existing = await db.query('SELECT * FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [currentUserId, targetUserId]);
+        const existing = await db.query('SELECT id FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [blockerId, blockedId]);
         if (existing && existing.length > 0) {
-            await db.query('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [currentUserId, targetUserId]);
-            return res.json({ message: 'User unblocked.', is_blocked: false });
+            await db.query('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [blockerId, blockedId]);
+            return res.json({ blocked: false, message: 'User unblocked.' });
         } else {
-            await db.query('INSERT INTO blocks (blocker_id, blocked_id) VALUES (?, ?)', [currentUserId, targetUserId]);
-            return res.json({ message: 'User blocked.', is_blocked: true });
+            await db.query('INSERT INTO blocks (blocker_id, blocked_id) VALUES (?, ?)', [blockerId, blockedId]);
+            return res.json({ blocked: true, message: 'User blocked.' });
         }
     } catch (err) {
         res.status(500).json({ error: 'Failed to update block state.' });
@@ -412,7 +518,10 @@ app.post('/api/block/:userId', async (req, res) => {
 });
 
 app.get('/api/blocks', async (req, res) => {
-    if (!req.session || !req.session.user) return res.json([]);
+    if (!req.session || !req.session.user) {
+        return res.json([]);
+    }
+
     try {
         const rows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [req.session.user.id]);
         res.json(rows.map(r => Number(r.blocked_id)));
@@ -421,7 +530,7 @@ app.get('/api/blocks', async (req, res) => {
     }
 });
 
-// --- MESSAGES & FEED ---
+// --- MESSAGES & POST CREATION ---
 
 app.get('/api/messages', async (req, res) => {
     const feedType = req.query.feed || 'public';
@@ -433,12 +542,6 @@ app.get('/api/messages', async (req, res) => {
     }
 
     try {
-        let blockedUserIds = [];
-        if (currentUserId) {
-            const blockRows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [currentUserId]);
-            blockedUserIds = blockRows.map(r => Number(r.blocked_id));
-        }
-
         let query = '';
         let params = [];
 
@@ -469,10 +572,16 @@ app.get('/api/messages', async (req, res) => {
             query += ' ORDER BY messages.id DESC';
         }
 
-        const rows = await db.query(query, params);
-        const filteredRows = rows.filter(r => !blockedUserIds.includes(Number(r.user_id)));
+        let rows = await db.query(query, params);
 
-        const rowsWithAvatars = filteredRows.map(r => ({
+        // Filter out blocked users' posts
+        if (currentUserId) {
+            const blockedUserRows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [currentUserId]);
+            const blockedIds = blockedUserRows.map(b => Number(b.blocked_id));
+            rows = rows.filter(r => !blockedIds.includes(Number(r.user_id)));
+        }
+
+        const rowsWithAvatars = rows.map(r => ({
             ...r,
             avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.name),
             title: r.title || 'Novice Adventurer',
@@ -491,14 +600,16 @@ app.post('/api/messages', async (req, res) => {
         return res.status(401).json({ error: 'You must log in to post.' });
     }
 
-    let { message, image_url, is_18plus, is_spoiler } = req.body;
+    const { message, image_url, is_18plus, is_spoiler } = req.body;
     
     if ((!message || message.trim() === '') && !image_url) {
         return res.status(400).json({ error: 'A post must contain text or an image.' });
     }
 
-    let safeMessage = censorText(message);
-    let detectedSpoiler = Boolean(is_spoiler) || detectSpoilerKeywords(safeMessage);
+    // Apply Automated Keyword & Text Filtering
+    const filterResult = applyTextFilters(message);
+    const finalMessage = filterResult.sanitizedText;
+    let detectedSpoiler = Boolean(is_spoiler) || filterResult.autoSpoiler;
     let detected18Plus = Boolean(is_18plus);
 
     if (req.session.user.is_minor && detected18Plus) {
@@ -511,14 +622,14 @@ app.post('/api/messages', async (req, res) => {
     try {
         const result = await db.query(
             'INSERT INTO messages (user_id, name, message, image_url, is_18plus, is_spoiler) VALUES (?, ?, ?, ?, ?, ?)',
-            [userId, authorName, safeMessage || '', image_url || null, detected18Plus, detectedSpoiler]
+            [userId, authorName, finalMessage, image_url || null, detected18Plus, detectedSpoiler]
         );
 
         const postPayload = {
             id: result.insertId,
             user_id: userId,
             name: authorName,
-            message: safeMessage || '',
+            message: finalMessage,
             image_url: image_url || null,
             is_18plus: detected18Plus,
             is_spoiler: detectedSpoiler,
@@ -533,6 +644,35 @@ app.post('/api/messages', async (req, res) => {
         res.json({ message: 'Post created successfully!', post: postPayload });
     } catch (err) {
         res.status(500).json({ error: `Failed to save post: ${err.message}` });
+    }
+});
+
+app.delete('/api/messages/:id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must be logged in to delete posts.' });
+    }
+
+    const postId = req.params.id;
+    const userId = req.session.user.id;
+
+    try {
+        const posts = await db.query('SELECT * FROM messages WHERE id = ?', [postId]);
+        if (!posts || posts.length === 0) {
+            return res.status(404).json({ error: 'Post not found.' });
+        }
+
+        const post = posts[0];
+        if (!post.user_id || Number(post.user_id) !== Number(userId)) {
+            return res.status(403).json({ error: 'You can only delete your own posts.' });
+        }
+
+        await db.query('DELETE FROM messages WHERE id = ?', [postId]);
+
+        io.emit('post_deleted', { id: Number(postId) });
+
+        res.json({ message: 'Post deleted successfully.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error during deletion.' });
     }
 });
 

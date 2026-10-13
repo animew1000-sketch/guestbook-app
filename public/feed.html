@@ -1,3 +1,743 @@
+Here is the complete, updated code for all required files in your application, incorporating:
+
+Live "Typing..." Indicators in Direct Messages using Socket.io events.
+
+Category 3: Moderation & Safety Enhancements
+
+Report System: A "Report Post" feature with a dedicated database table (reports) and modal interface.
+
+Automated Keyword / Text Filtering: Server-side profanity and spoiler detection before posts are stored.
+
+Custom Block List: A blocks table allowing users to block accounts so their posts and direct messages are filtered out.
+
+Step 1: Database Setup (SQL Setup)
+Run these queries in your MySQL database to create the necessary tables and columns:
+
+SQL
+ALTER TABLE users ADD COLUMN title VARCHAR(100) DEFAULT 'Novice Adventurer';
+ALTER TABLE users ADD COLUMN badge VARCHAR(20) DEFAULT '⭐';
+ALTER TABLE users ADD COLUMN custom_avatar_url LONGTEXT DEFAULT NULL;
+ALTER TABLE users ADD COLUMN is_minor TINYINT(1) DEFAULT 0;
+ALTER TABLE users ADD COLUMN age_verified TINYINT(1) DEFAULT 0;
+ALTER TABLE users ADD COLUMN birthdate DATE DEFAULT NULL;
+ALTER TABLE users ADD COLUMN device_id VARCHAR(255) DEFAULT NULL;
+
+ALTER TABLE messages ADD COLUMN is_spoiler TINYINT(1) DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS reports (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    reporter_id INT NOT NULL,
+    post_id INT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (post_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS blocks (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    blocker_id INT NOT NULL,
+    blocked_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_block (blocker_id, blocked_id),
+    FOREIGN KEY (blocker_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (blocked_id) REFERENCES users(id) ON DELETE CASCADE
+);
+Step 2: Backend (server.js)
+JavaScript
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const session = require('express-session');
+const { Server } = require('socket.io');
+const db = require('./db');
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.set('trust proxy', 1);
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+const sessionMiddleware = session({
+    name: 'anime_social_sid',
+    secret: process.env.SESSION_SECRET || 'anime_social_secret_key',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { 
+        secure: process.env.NODE_ENV === 'production', 
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000 
+    }
+});
+
+app.use(sessionMiddleware);
+
+app.use((req, res, next) => {
+    if (req.session && req.session.user) {
+        req.session.touch();
+    }
+    next();
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+const server = http.createServer(app);
+const io = new Server(server, { maxHttpBufferSize: 1e6 });
+
+io.use((socket, next) => {
+    if (socket.request) {
+        sessionMiddleware(socket.request, socket.request.res || {}, next);
+    } else {
+        next();
+    }
+});
+
+const onlineUsers = new Map();
+
+io.on('connection', (socket) => {
+    let sessionUser = (socket.request && socket.request.session) ? socket.request.session.user : null;
+
+    const registerUserSocket = (userId) => {
+        if (!userId) return;
+        const roomId = `user_${userId}`;
+        socket.join(roomId);
+        onlineUsers.set(Number(userId), socket.id);
+    };
+
+    if (sessionUser) {
+        registerUserSocket(sessionUser.id);
+    }
+
+    socket.on('identify_user', (userId) => {
+        registerUserSocket(userId);
+    });
+
+    // --- LIVE TYPING INDICATORS ---
+    socket.on('typing_start', (data) => {
+        const senderId = sessionUser ? sessionUser.id : data.sender_id;
+        const { receiver_id } = data;
+        if (!receiver_id || !senderId) return;
+
+        io.to(`user_${receiver_id}`).emit('user_typing_start', {
+            sender_id: Number(senderId),
+            sender_username: sessionUser ? sessionUser.username : 'User'
+        });
+    });
+
+    socket.on('typing_stop', (data) => {
+        const senderId = sessionUser ? sessionUser.id : data.sender_id;
+        const { receiver_id } = data;
+        if (!receiver_id || !senderId) return;
+
+        io.to(`user_${receiver_id}`).emit('user_typing_stop', {
+            sender_id: Number(senderId)
+        });
+    });
+
+    // --- DIRECT MESSAGES WITH BLOCK CHECK ---
+    socket.on('send_direct_message', async (data) => {
+        const senderId = sessionUser ? sessionUser.id : data.sender_id;
+        const { receiver_id, message, media_url, media_type, is_18plus } = data;
+        
+        if (!receiver_id || (!message && !media_url) || !senderId) return;
+
+        try {
+            // Check if blocked
+            const blocks = await db.query(
+                'SELECT id FROM blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)',
+                [receiver_id, senderId, senderId, receiver_id]
+            );
+
+            if (blocks && blocks.length > 0) {
+                return socket.emit('error_message', { error: 'Message cannot be delivered due to active user blocking.' });
+            }
+
+            const result = await db.query(
+                'INSERT INTO direct_messages (sender_id, receiver_id, message, media_url, media_type, is_18plus) VALUES (?, ?, ?, ?, ?, ?)',
+                [senderId, receiver_id, message || '', media_url || null, media_type || 'image', is_18plus ? 1 : 0]
+            );
+
+            const payload = {
+                id: result.insertId,
+                sender_id: Number(senderId),
+                sender_username: sessionUser ? sessionUser.username : 'User',
+                receiver_id: Number(receiver_id),
+                message,
+                media_url,
+                media_type,
+                is_18plus,
+                created_at: new Date()
+            };
+
+            io.to(`user_${receiver_id}`).emit('receive_direct_message', payload);
+            io.to(`user_${receiver_id}`).emit('dm_notification', {
+                sender_id: Number(senderId),
+                sender_username: sessionUser ? sessionUser.username : 'User',
+                message: message || 'Sent a media attachment'
+            });
+
+            socket.emit('message_sent_confirm', payload);
+        } catch (err) {
+            console.error('Failed to process socket DM:', err);
+        }
+    });
+
+    socket.on('disconnect', () => {
+        if (sessionUser) {
+            onlineUsers.delete(Number(sessionUser.id));
+        }
+    });
+});
+
+function calculateAge(birthdateStr) {
+    const today = new Date();
+    const birthDate = new Date(birthdateStr);
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+    
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        age--;
+    }
+    return age;
+}
+
+function buildAvatarUrl(customUrl, style, seed) {
+    if (customUrl) return customUrl;
+    const selectedStyle = style || 'bottts';
+    const selectedSeed = seed || 'default';
+    return `https://api.dicebear.com/7.x/${selectedStyle}/svg?seed=${encodeURIComponent(selectedSeed)}`;
+}
+
+// --- AUTOMATED KEYWORD & TEXT FILTERING ---
+const PROFANITY_LIST = ['badword1', 'badword2', 'hate speech', 'spamlink'];
+const SPOILER_KEYWORDS = ['spoiler:', 'dies in chapter', 'ending leaked', 'final battle winner'];
+
+function applyTextFilters(text) {
+    if (!text) return { sanitizedText: '', autoSpoiler: false, isCensored: false };
+
+    let sanitizedText = text;
+    let autoSpoiler = false;
+    let isCensored = false;
+
+    // Filter profanity
+    PROFANITY_LIST.forEach(word => {
+        const regex = new RegExp(`\\b${word}\\b`, 'gi');
+        if (regex.test(sanitizedText)) {
+            sanitizedText = sanitizedText.replace(regex, '****');
+            isCensored = true;
+        }
+    });
+
+    // Detect spoiler triggers
+    SPOILER_KEYWORDS.forEach(keyword => {
+        if (sanitizedText.toLowerCase().includes(keyword.toLowerCase())) {
+            autoSpoiler = true;
+        }
+    });
+
+    return { sanitizedText, autoSpoiler, isCensored };
+}
+
+// --- AUTH & DEVICE LIMITS ---
+
+app.post('/api/register', async (req, res) => {
+    const { username, email, password, device_id } = req.body;
+    if (!username || !email || !password) {
+        return res.status(400).json({ error: 'All fields are required.' });
+    }
+
+    try {
+        if (device_id) {
+            const existingAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
+            if (existingAccounts && existingAccounts.length >= 2) {
+                return res.status(403).json({
+                    error: 'Device account limit exceeded. Maximum 2 accounts allowed per computer.',
+                    device_limit_exceeded: true,
+                    accounts: existingAccounts
+                });
+            }
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await db.query(
+            'INSERT INTO users (username, email, password_hash, avatar_style, avatar_seed, title, badge, device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [username, email, hashedPassword, 'bottts', username, 'Novice Adventurer', '⭐', device_id || null]
+        );
+        res.json({ message: 'User registered successfully!' });
+    } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ error: 'Username or Email already exists.' });
+        }
+        res.status(500).json({ error: 'Database error during registration.' });
+    }
+});
+
+app.post('/api/login', async (req, res) => {
+    const { email, password, device_id } = req.body;
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password required.' });
+    }
+
+    try {
+        const users = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+        if (!users || users.length === 0) {
+            return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+
+        const user = users[0];
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match) {
+            return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+
+        if (device_id && user.device_id !== device_id) {
+            await db.query('UPDATE users SET device_id = ? WHERE id = ?', [device_id, user.id]);
+            user.device_id = device_id;
+        }
+
+        if (device_id) {
+            const connectedAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
+            if (connectedAccounts && connectedAccounts.length > 2) {
+                return res.status(403).json({
+                    error: 'Device account limit exceeded. Delete extra accounts to log in.',
+                    device_limit_exceeded: true,
+                    accounts: connectedAccounts
+                });
+            }
+        }
+
+        let isMinor = Boolean(user.is_minor);
+        let ageVerified = Boolean(user.age_verified);
+
+        if (user.birthdate) {
+            const age = calculateAge(user.birthdate);
+            isMinor = age < 18;
+            ageVerified = !isMinor;
+            await db.query('UPDATE users SET is_minor = ?, age_verified = ? WHERE id = ?', [isMinor, ageVerified, user.id]);
+        }
+
+        const avatarStyle = user.avatar_style || 'bottts';
+        const avatarSeed = user.avatar_seed || user.username;
+        const customAvatarUrl = user.custom_avatar_url || null;
+
+        req.session.user = { 
+            id: user.id, 
+            username: user.username, 
+            email: user.email,
+            birthdate: user.birthdate,
+            age_verified: ageVerified,
+            is_minor: isMinor,
+            avatar_style: avatarStyle,
+            avatar_seed: avatarSeed,
+            custom_avatar_url: customAvatarUrl,
+            avatar_url: buildAvatarUrl(customAvatarUrl, avatarStyle, avatarSeed),
+            title: user.title || 'Novice Adventurer',
+            badge: user.badge || '⭐',
+            device_id: user.device_id
+        };
+        
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+            res.json({ user: req.session.user });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error during login.' });
+    }
+});
+
+app.get('/api/device-accounts', async (req, res) => {
+    const deviceId = req.query.device_id;
+    if (!deviceId) return res.status(400).json({ error: 'Device ID required.' });
+
+    try {
+        const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
+        res.json({ accounts, count: accounts.length });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch device accounts.' });
+    }
+});
+
+app.post('/api/delete-device-account', async (req, res) => {
+    const { target_user_id, password, device_id } = req.body;
+    if (!target_user_id || !password || !device_id) {
+        return res.status(400).json({ error: 'Target account ID, password, and device ID are required.' });
+    }
+
+    try {
+        const users = await db.query('SELECT * FROM users WHERE id = ? AND device_id = ?', [target_user_id, device_id]);
+        if (!users || users.length === 0) {
+            return res.status(404).json({ error: 'Account not found on this device.' });
+        }
+
+        const user = users[0];
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match) {
+            return res.status(401).json({ error: 'Incorrect password for account deletion.' });
+        }
+
+        await db.query('DELETE FROM direct_messages WHERE sender_id = ? OR receiver_id = ?', [target_user_id, target_user_id]);
+        await db.query('DELETE FROM follows WHERE follower_id = ? OR following_id = ?', [target_user_id, target_user_id]);
+        await db.query('DELETE FROM messages WHERE user_id = ?', [target_user_id]);
+        await db.query('DELETE FROM reports WHERE reporter_id = ?', [target_user_id]);
+        await db.query('DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?', [target_user_id, target_user_id]);
+        await db.query('DELETE FROM users WHERE id = ?', [target_user_id]);
+
+        const remainingAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
+
+        res.json({
+            message: `Account @${user.username} deleted successfully.`,
+            remaining_count: remainingAccounts.length,
+            accounts: remainingAccounts,
+            can_proceed: remainingAccounts.length <= 2
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete account.' });
+    }
+});
+
+app.get('/api/me', async (req, res) => {
+    if (req.session && req.session.user) {
+        const deviceId = req.session.user.device_id;
+        if (deviceId) {
+            const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
+            if (accounts.length > 2) {
+                req.session.destroy();
+                res.clearCookie('anime_social_sid');
+                return res.status(403).json({
+                    error: 'Device limit exceeded.',
+                    device_limit_exceeded: true,
+                    accounts
+                });
+            }
+        }
+        res.json({ user: req.session.user });
+    } else {
+        res.status(401).json({ error: 'Not logged in' });
+    }
+});
+
+app.post('/api/logout', (req, res) => {
+    req.session.destroy(err => {
+        if (err) return res.status(500).json({ error: 'Failed to logout' });
+        res.clearCookie('anime_social_sid');
+        res.json({ message: 'Logged out successfully' });
+    });
+});
+
+app.post('/api/avatar', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to update profile.' });
+    }
+
+    const { avatar_style, avatar_seed, custom_avatar_url, title, badge } = req.body;
+    const style = avatar_style || 'bottts';
+    const seed = avatar_seed || req.session.user.username;
+    const customUrl = custom_avatar_url || null;
+    const userTitle = (title && title.trim().length > 0) ? title.trim().substring(0, 40) : 'Novice Adventurer';
+    const userBadge = badge || '⭐';
+
+    try {
+        await db.query(
+            'UPDATE users SET avatar_style = ?, avatar_seed = ?, custom_avatar_url = ?, title = ?, badge = ? WHERE id = ?',
+            [style, seed, customUrl, userTitle, userBadge, req.session.user.id]
+        );
+
+        req.session.user.avatar_style = style;
+        req.session.user.avatar_seed = seed;
+        req.session.user.custom_avatar_url = customUrl;
+        req.session.user.avatar_url = buildAvatarUrl(customUrl, style, seed);
+        req.session.user.title = userTitle;
+        req.session.user.badge = userBadge;
+
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+            res.json({ 
+                message: 'Profile updated!', 
+                avatar_url: req.session.user.avatar_url,
+                title: userTitle,
+                badge: userBadge
+            });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update profile.' });
+    }
+});
+
+app.post('/api/verify-birthdate', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must be logged in.' });
+    }
+
+    const { birthdate } = req.body;
+    if (!birthdate) {
+        return res.status(400).json({ error: 'Birthdate is required.' });
+    }
+
+    const age = calculateAge(birthdate);
+    const isMinor = age < 18;
+    const ageVerified = !isMinor;
+    const userId = req.session.user.id;
+
+    try {
+        await db.query(
+            'UPDATE users SET birthdate = ?, is_minor = ?, age_verified = ? WHERE id = ?',
+            [birthdate, isMinor, ageVerified, userId]
+        );
+
+        req.session.user.birthdate = birthdate;
+        req.session.user.is_minor = isMinor;
+        req.session.user.age_verified = ageVerified;
+
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+
+            if (isMinor) {
+                return res.json({ 
+                    is_minor: true, 
+                    age_verified: false, 
+                    message: `Access denied. You are ${age} years old. 18+ content is locked until your 18th birthday.` 
+                });
+            }
+
+            res.json({ 
+                is_minor: false, 
+                age_verified: true, 
+                message: 'Birthdate verified! 18+ content access granted.' 
+            });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error storing birthdate.' });
+    }
+});
+
+// --- REPORTING & BLOCKING SYSTEM ---
+
+app.post('/api/reports', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to submit a report.' });
+    }
+
+    const { post_id, reason } = req.body;
+    if (!post_id || !reason) {
+        return res.status(400).json({ error: 'Post ID and reason are required.' });
+    }
+
+    try {
+        await db.query(
+            'INSERT INTO reports (reporter_id, post_id, reason) VALUES (?, ?, ?)',
+            [req.session.user.id, post_id, reason]
+        );
+        res.json({ message: 'Report submitted successfully. Thank you for keeping the community safe.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to submit report.' });
+    }
+});
+
+app.post('/api/block/:target_id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to block users.' });
+    }
+
+    const blockerId = req.session.user.id;
+    const blockedId = req.params.target_id;
+
+    if (Number(blockerId) === Number(blockedId)) {
+        return res.status(400).json({ error: 'You cannot block yourself.' });
+    }
+
+    try {
+        const existing = await db.query('SELECT id FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [blockerId, blockedId]);
+        if (existing && existing.length > 0) {
+            await db.query('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?', [blockerId, blockedId]);
+            return res.json({ blocked: false, message: 'User unblocked.' });
+        } else {
+            await db.query('INSERT INTO blocks (blocker_id, blocked_id) VALUES (?, ?)', [blockerId, blockedId]);
+            return res.json({ blocked: true, message: 'User blocked.' });
+        }
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update block state.' });
+    }
+});
+
+app.get('/api/blocks', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.json([]);
+    }
+
+    try {
+        const rows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [req.session.user.id]);
+        res.json(rows.map(r => Number(r.blocked_id)));
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch block list.' });
+    }
+});
+
+// --- MESSAGES & POST CREATION ---
+
+app.get('/api/messages', async (req, res) => {
+    const feedType = req.query.feed || 'public';
+    let show18Plus = req.query.show18plus === 'true';
+    const currentUserId = (req.session && req.session.user) ? req.session.user.id : null;
+
+    if (req.session && req.session.user && req.session.user.is_minor) {
+        show18Plus = false;
+    }
+
+    try {
+        let query = '';
+        let params = [];
+
+        if (feedType === 'following' && currentUserId) {
+            query = `
+                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge 
+                FROM messages
+                INNER JOIN follows ON messages.user_id = follows.following_id
+                LEFT JOIN users ON messages.user_id = users.id
+                WHERE follows.follower_id = ?
+            `;
+            params.push(currentUserId);
+
+            if (!show18Plus) {
+                query += ' AND (messages.is_18plus IS FALSE OR messages.is_18plus IS NULL)';
+            }
+            query += ' ORDER BY messages.id DESC';
+        } else {
+            query = `
+                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge 
+                FROM messages 
+                LEFT JOIN users ON messages.user_id = users.id 
+                WHERE 1=1
+            `;
+            if (!show18Plus) {
+                query += ' AND (messages.is_18plus IS FALSE OR messages.is_18plus IS NULL)';
+            }
+            query += ' ORDER BY messages.id DESC';
+        }
+
+        let rows = await db.query(query, params);
+
+        // Filter out blocked users' posts
+        if (currentUserId) {
+            const blockedUserRows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [currentUserId]);
+            const blockedIds = blockedUserRows.map(b => Number(b.blocked_id));
+            rows = rows.filter(r => !blockedIds.includes(Number(r.user_id)));
+        }
+
+        const rowsWithAvatars = rows.map(r => ({
+            ...r,
+            avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.name),
+            title: r.title || 'Novice Adventurer',
+            badge: r.badge || '⭐',
+            is_spoiler: Boolean(r.is_spoiler)
+        }));
+
+        res.json(rowsWithAvatars);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch messages.' });
+    }
+});
+
+app.post('/api/messages', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to post.' });
+    }
+
+    const { message, image_url, is_18plus, is_spoiler } = req.body;
+    
+    if ((!message || message.trim() === '') && !image_url) {
+        return res.status(400).json({ error: 'A post must contain text or an image.' });
+    }
+
+    // Apply Automated Keyword & Text Filtering
+    const filterResult = applyTextFilters(message);
+    const finalMessage = filterResult.sanitizedText;
+    let detectedSpoiler = Boolean(is_spoiler) || filterResult.autoSpoiler;
+    let detected18Plus = Boolean(is_18plus);
+
+    if (req.session.user.is_minor && detected18Plus) {
+        return res.status(403).json({ error: 'Accounts under 18 are restricted from submitting mature 18+ content.' });
+    }
+
+    const userId = req.session.user.id;
+    const authorName = req.session.user.username;
+
+    try {
+        const result = await db.query(
+            'INSERT INTO messages (user_id, name, message, image_url, is_18plus, is_spoiler) VALUES (?, ?, ?, ?, ?, ?)',
+            [userId, authorName, finalMessage, image_url || null, detected18Plus, detectedSpoiler]
+        );
+
+        const postPayload = {
+            id: result.insertId,
+            user_id: userId,
+            name: authorName,
+            message: finalMessage,
+            image_url: image_url || null,
+            is_18plus: detected18Plus,
+            is_spoiler: detectedSpoiler,
+            created_at: new Date(),
+            avatar_url: req.session.user.avatar_url,
+            title: req.session.user.title || 'Novice Adventurer',
+            badge: req.session.user.badge || '⭐'
+        };
+
+        io.emit('new_public_post', postPayload);
+
+        res.json({ message: 'Post created successfully!', post: postPayload });
+    } catch (err) {
+        res.status(500).json({ error: `Failed to save post: ${err.message}` });
+    }
+});
+
+app.delete('/api/messages/:id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must be logged in to delete posts.' });
+    }
+
+    const postId = req.params.id;
+    const userId = req.session.user.id;
+
+    try {
+        const posts = await db.query('SELECT * FROM messages WHERE id = ?', [postId]);
+        if (!posts || posts.length === 0) {
+            return res.status(404).json({ error: 'Post not found.' });
+        }
+
+        const post = posts[0];
+        if (!post.user_id || Number(post.user_id) !== Number(userId)) {
+            return res.status(403).json({ error: 'You can only delete your own posts.' });
+        }
+
+        await db.query('DELETE FROM messages WHERE id = ?', [postId]);
+
+        io.emit('post_deleted', { id: Number(postId) });
+
+        res.json({ message: 'Post deleted successfully.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error during deletion.' });
+    }
+});
+
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+db.getDb()
+    .then(() => {
+        server.listen(PORT, () => {
+            console.log(`Server running on http://localhost:${PORT}`);
+        });
+    })
+    .catch(err => {
+        console.error('Failed to initialize database connection:', err.message);
+    });
+Step 3: Frontend (public/feed.html)
+HTML
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -79,9 +819,29 @@
             align-items: center;
             margin-bottom: 8px;
         }
+        .btn-report {
+            background: transparent;
+            border: none;
+            color: #f87171;
+            font-size: 0.75rem;
+            cursor: pointer;
+            padding: 2px 4px;
+        }
+        .btn-block {
+            background: #475569;
+            color: #fff;
+            font-size: 0.75rem;
+            border: none;
+            border-radius: 4px;
+            padding: 2px 6px;
+            cursor: pointer;
+        }
+        .btn-block.blocked {
+            background: #ef4444;
+        }
         .typing-indicator {
             font-size: 0.75rem;
-            color: #94a3b8;
+            color: #38bdf8;
             font-style: italic;
             padding: 4px 12px;
         }
@@ -161,44 +921,57 @@
         <div id="messages" class="messages"></div>
     </div>
 
-    <!-- REPORT MODAL -->
-    <div id="report-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 4000;">
-        <div style="background: #1e293b; border: 1px solid #f59e0b; padding: 20px; border-radius: 12px; max-width: 400px; width: 100%;">
-            <h3 style="color: #f59e0b; margin-top: 0; margin-bottom: 8px;">🚩 Report Content</h3>
-            <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 12px;">Select a reason for reporting:</p>
-            
-            <select id="report-reason-select" style="width: 100%; padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; margin-bottom: 16px;">
-                <option value="Hate Speech or Harassment">Hate Speech or Harassment</option>
-                <option value="Explicit or Unmarked NSFW">Explicit or Unmarked NSFW</option>
-                <option value="Unmarked Spoilers">Unmarked Spoilers</option>
-                <option value="Spam or Misleading Content">Spam or Misleading Content</option>
-            </select>
-
-            <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                <button onclick="submitReport()" style="padding: 8px 16px; background: #f59e0b; color: #000; border: none; border-radius: 6px; font-weight: 700; cursor: pointer;">Submit Report</button>
-                <button onclick="closeReportModal()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
-            </div>
-        </div>
-    </div>
-
     <!-- Mandatory Account Deletion Modal (Limit: 2 Accounts Per Computer) -->
     <div id="device-limit-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.95); display: flex; justify-content: center; align-items: center; z-index: 5000; padding: 20px;">
         <div style="background: #1e293b; border: 2px solid #ef4444; padding: 24px; border-radius: 12px; max-width: 480px; width: 100%; text-align: center;">
             <h2 style="color: #ef4444; margin-top: 0; margin-bottom: 8px;">⚠️ Device Limit Exceeded</h2>
             <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 16px;">
-                This computer has <strong id="device-account-count" style="color: #ef4444;">0</strong> accounts registered. A maximum of <strong>2 accounts per computer</strong> is allowed. Delete accounts until only 2 remain to continue.
+                This computer has <strong id="device-account-count" style="color: #ef4444;">0</strong> accounts registered. A maximum of <strong>2 accounts per computer</strong> is allowed. You must delete accounts until only 2 remain to continue using the website.
             </p>
 
             <div id="device-account-list" style="max-height: 220px; overflow-y: auto; margin-bottom: 16px; text-align: left;"></div>
 
             <div id="delete-confirmation-box" class="hidden" style="background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #ef4444; margin-bottom: 16px;">
                 <p id="delete-confirm-label" style="color: #f87171; font-size: 0.8rem; margin: 0 0 8px 0; font-weight: 600;">Confirm Account Deletion</p>
-                <input type="password" id="delete-account-password" placeholder="Enter account password..." style="width: 100%; padding: 8px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem; margin-bottom: 8px;">
+                <input type="password" id="delete-account-password" placeholder="Enter account password to confirm..." style="width: 100%; padding: 8px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem; margin-bottom: 8px;">
                 <div style="display: flex; gap: 8px; justify-content: flex-end;">
                     <button onclick="confirmAccountDeletion()" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Confirm Permanent Delete</button>
                     <button onclick="cancelAccountDeletion()" style="padding: 6px 12px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Cancel</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Report Post Modal -->
+    <div id="report-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2500;">
+        <div style="background: #1e293b; border: 1px solid #f87171; padding: 20px; border-radius: 12px; max-width: 400px; width: 100%;">
+            <h3 style="color: #f87171; margin-top: 0; margin-bottom: 12px;">Report Post</h3>
+            <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 12px;">Please specify why you are reporting this content:</p>
+            <textarea id="report-reason-input" rows="3" placeholder="Reason (e.g. Spam, Unmarked Spoilers, Harassment)..." style="width: 100%; padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem; margin-bottom: 12px;"></textarea>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button onclick="submitReport()" style="padding: 8px 16px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Submit Report</button>
+                <button onclick="closeReportModal()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Incoming DM Toast Notification -->
+    <div id="dm-toast" class="hidden" style="position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #818cf8; color: #fff; padding: 12px 18px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); display: flex; align-items: center; gap: 12px; z-index: 3000; cursor: pointer;">
+        <span style="font-size: 1.2rem;">💬</span>
+        <div>
+            <div id="dm-toast-title" style="font-weight: 700; font-size: 0.85rem; color: #818cf8;">New Message</div>
+            <div id="dm-toast-body" style="font-size: 0.8rem; color: #cbd5e1;">You have a new message!</div>
+        </div>
+        <button onclick="event.stopPropagation(); closeToast();" style="background: transparent; border: none; color: #94a3b8; font-size: 1rem; cursor: pointer; margin-left: 8px;">✕</button>
+    </div>
+
+    <!-- Inbox Selector Modal -->
+    <div id="inbox-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
+        <div style="background: #1e293b; border: 1px solid #0284c7; padding: 20px; border-radius: 12px; max-width: 380px; width: 100%;">
+            <h3 style="color: #38bdf8; margin-top: 0; margin-bottom: 12px;">Direct Messages Inbox</h3>
+            <p style="color: #94a3b8; font-size: 0.85rem; margin-bottom: 12px;">Select an active user to view conversation:</p>
+            <div id="inbox-user-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 250px; overflow-y: auto; margin-bottom: 16px;"></div>
+            <button onclick="closeInboxModal()" style="width: 100%; padding: 8px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Close</button>
         </div>
     </div>
 
@@ -211,13 +984,102 @@
 
         <div id="dm-chat-history" style="flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;"></div>
         
-        <div id="dm-typing-status" class="typing-indicator hidden">User is typing...</div>
+        <div id="dm-typing-indicator" class="typing-indicator hidden">User is typing...</div>
+
+        <div id="giphy-picker" class="hidden" style="height: 180px; background: #1e293b; border-top: 1px solid #334155; padding: 8px; overflow-y: auto;">
+            <input type="text" id="giphy-search-input" placeholder="Search Giphy..." oninput="searchGiphy(this.value)" style="width: 100%; padding: 6px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 4px; margin-bottom: 6px; font-size: 0.8rem;">
+            <div id="giphy-results" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;"></div>
+        </div>
 
         <div style="padding: 10px; background: #1e293b; border-top: 1px solid #334155; display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; gap: 6px;">
+                <button type="button" onclick="toggleGiphyPicker()" class="btn-small" style="background: #e11d48; padding: 4px 8px; font-size: 0.75rem;">Giphy</button>
+                <input type="file" id="dm-gif-input" accept="image/gif" style="display: none;" onchange="handleGifUpload(event)">
+                <button type="button" onclick="document.getElementById('dm-gif-input').click()" class="btn-small" style="background: #a855f7; padding: 4px 8px; font-size: 0.75rem;">Upload GIF</button>
+                <input type="file" id="dm-video-input" accept="video/mp4,video/webm" style="display: none;" onchange="handleVideoUpload(event)">
+                <button type="button" onclick="document.getElementById('dm-video-input').click()" class="btn-small" style="background: #0284c7; padding: 4px 8px; font-size: 0.75rem;">🎥 Video</button>
+            </div>
+            
             <div style="display: flex; gap: 6px;">
                 <input type="text" id="dm-input-text" placeholder="Type a message..." style="flex: 1; padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem;" oninput="handleDmTypingInput()" onkeydown="if(event.key === 'Enter') submitDirectMessage()">
                 <button type="button" onclick="submitDirectMessage()" style="padding: 8px 14px; background: #6366f1; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Send</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Enhanced Profile Modal -->
+    <div id="avatar-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
+        <div style="background: #1e293b; border: 1px solid #a855f7; padding: 24px; border-radius: 12px; max-width: 420px; width: 100%; text-align: center;">
+            <h3 style="color: #c084fc; margin-bottom: 16px;">Customize Profile & Badges</h3>
+            
+            <img id="avatar-modal-preview" src="" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #a855f7; background: #0f172a; margin-bottom: 12px; object-fit: cover;" alt="Preview">
+            
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; text-align: left;">
+                <label style="color: #c084fc; font-size: 0.8rem; font-weight: 600;">Custom Title</label>
+                <input type="text" id="profile-title-input" placeholder="Type your custom title..." maxlength="40" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+
+                <label style="color: #c084fc; font-size: 0.8rem; font-weight: 600;">Select Emoji Badge</label>
+                <div class="emoji-grid" id="emoji-badge-grid"></div>
+
+                <hr style="border-color: #334155; margin: 4px 0;">
+
+                <label style="color: #c084fc; font-size: 0.8rem; font-weight: 600;">Option 1: Upload Custom Photo</label>
+                <input type="file" id="custom-avatar-file" accept="image/*" onchange="handleCustomAvatarSelect(event)" style="padding: 6px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.8rem;">
+                <button type="button" id="clear-custom-avatar-btn" class="btn-small hidden" style="background: #ef4444; margin-top: -4px;" onclick="clearCustomAvatarUpload()">Clear Custom Photo</button>
+
+                <hr style="border-color: #334155; margin: 4px 0;">
+
+                <label style="color: #818cf8; font-size: 0.8rem; font-weight: 600;">Option 2: Generate Avatar</label>
+                <select id="avatar-style-select" onchange="updateAvatarModalPreview()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                    <option value="bottts">Cyberpunk Bottts</option>
+                    <option value="adventurer">Anime Adventurer</option>
+                    <option value="pixel-art">Pixel Art Avatar</option>
+                    <option value="lorelei">Anime Lorelei</option>
+                </select>
+                <input type="text" id="avatar-seed-input" placeholder="Avatar Seed / Name" oninput="updateAvatarModalPreview()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+            </div>
+
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button onclick="saveAvatarSelection()" style="padding: 8px 16px; background: #a855f7; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Save Profile</button>
+                <button onclick="closeAvatarModal()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Studio Modal -->
+    <div id="meme-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.9); display: flex; justify-content: center; align-items: center; z-index: 2000; padding: 20px;">
+        <div style="background: #1e293b; border: 1px solid #818cf8; padding: 20px; border-radius: 12px; max-width: 500px; width: 100%; text-align: center;">
+            <h3 style="color: #818cf8; margin-bottom: 12px;">Image Studio & Meme Creator</h3>
+            <canvas id="meme-canvas" style="max-width: 100%; height: auto; border: 1px solid #334155; border-radius: 6px; background: #0f172a; margin-bottom: 12px;"></canvas>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+                <input type="text" id="meme-top-text" placeholder="Top Text" oninput="renderMemeCanvas()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                <input type="text" id="meme-bottom-text" placeholder="Bottom Text" oninput="renderMemeCanvas()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                <select id="meme-filter-select" onchange="renderMemeCanvas()" style="padding: 8px; background: #0f172a; border: 1px solid #334155; color: #fff; border-radius: 6px;">
+                    <option value="none">Filter: Normal</option>
+                    <option value="cyberpunk">Filter: Cyberpunk Glow</option>
+                    <option value="grayscale">Filter: Monochrome</option>
+                    <option value="invert">Filter: Inverted Neon</option>
+                </select>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button onclick="applyMemeCanvasToPost()" style="padding: 8px 16px; background: #6366f1; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Apply Image Edits</button>
+                <button onclick="closeMemeStudio()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Birthdate Verification Modal -->
+    <div id="age-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 2000;">
+        <div style="background: #1e293b; border: 1px solid #f43f5e; padding: 24px; border-radius: 12px; max-width: 420px; text-align: center;">
+            <h2 style="color: #f43f5e; margin-bottom: 12px;">Date of Birth Required</h2>
+            <p style="color: #cbd5e1; font-size: 0.9rem; margin-bottom: 16px;">To enable 18+ content, please enter your date of birth. This will be saved to your profile and locked if you are under 18.</p>
+            <form onsubmit="submitBirthdateVerification(event)" style="margin-bottom: 0;">
+                <input type="date" id="birthdate-input" required style="margin-bottom: 16px; padding: 10px; background: #0f172a; border: 1px solid #f43f5e; color: #fff; border-radius: 6px;">
+                <div style="display: flex; gap: 12px; justify-content: center;">
+                    <button type="submit" style="padding: 8px 16px; background: #f43f5e; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Verify Date</button>
+                    <button type="button" onclick="cancelAgeVerification()" style="padding: 8px 16px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer;">Cancel</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -228,11 +1090,32 @@
         let blockedUserIds = [];
         let show18Plus = localStorage.getItem('show18Plus') === 'true';
 
+        let pendingCustomAvatarBase64 = null;
+        let selectedOriginalImage = null;
+        let editedBase64Image = null;
+        let selectedBadgeEmoji = '⭐';
+
+        let clientNsfwModel = null;
+
         let socket = null;
         let currentActiveDmUserId = null;
+        let selectedMediaUrl = null;
+        let selectedMediaType = 'image';
+        let unreadDmSenders = new Set();
+        let targetDeleteUserId = null;
+        let reportingPostId = null;
+
         let typingTimeout = null;
-        let activeReportPostId = null;
-        let activeReportUserId = null;
+
+        const GIPHY_API_KEY = 'YOUR_GIPHY_API_KEY';
+        const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUDINARY_CLOUD_NAME';
+        const CLOUDINARY_PRESET = 'YOUR_CLOUDINARY_UNSIGNED_PRESET';
+
+        const EMOJI_BADGES = [
+            '⭐', '🔥', '⚡', '👑', '🎮', '⚔️', '🛡️', '💎', '🚀', '🌟', 
+            '🌸', '🍜', '⛩️', '🔮', '🎭', '👾', '🎨', '🎯', '🎧', '📜',
+            '✨', '💫', '💥', '🥇', '🏆', '🧿', '🍀', '🍓', '☕', '🗡️'
+        ];
 
         function getOrCreateDeviceId() {
             let deviceId = localStorage.getItem('anime_social_device_id');
@@ -244,43 +1127,35 @@
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
+            if (window.tf && tf.ENV) {
+                tf.ENV.set('PROD', true);
+            }
+
             getOrCreateDeviceId();
-            
-            // ORDER IS CRITICAL: Validate user session FIRST so profile status updates immediately
-            await checkUserSession();
-            
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const tabParam = urlParams.get('tab');
+            if (tabParam === 'following' || tabParam === 'public') {
+                currentFeedTab = tabParam;
+            }
+
+            const publicBtn = document.getElementById('tab-public');
+            const followingBtn = document.getElementById('tab-following');
+            if (publicBtn) publicBtn.classList.toggle('active', currentFeedTab === 'public');
+            if (followingBtn) followingBtn.classList.toggle('active', currentFeedTab === 'following');
+
+            renderEmojiGrid();
             await checkDeviceAccounts();
-            await fetchBlockedList();
+            await checkUserSession();
             await fetchFollowingList();
+            await fetchBlockList();
             loadMessages();
         });
-
-        async function checkUserSession() {
-            try {
-                const res = await fetch('/api/me', { 
-                    method: 'GET',
-                    headers: { 'Cache-Control': 'no-cache' },
-                    credentials: 'include' 
-                });
-                
-                if (res.ok) {
-                    const data = await res.json();
-                    currentUser = data.user;
-                    initSocketConnection();
-                } else {
-                    currentUser = null;
-                }
-            } catch (e) {
-                console.error('Session check error:', e);
-                currentUser = null;
-            }
-            updateUIState();
-        }
 
         async function checkDeviceAccounts() {
             const deviceId = getOrCreateDeviceId();
             try {
-                const res = await fetch(`/api/device-accounts?device_id=${deviceId}`, { credentials: 'include' });
+                const res = await fetch(`/api/device-accounts?device_id=${deviceId}`);
                 if (res.ok) {
                     const data = await res.json();
                     if (data.count > 2) {
@@ -288,33 +1163,177 @@
                     }
                 }
             } catch (e) {
-                console.error('Device check error:', e);
+                console.error('Device account check error:', e);
             }
         }
 
-        async function fetchBlockedList() {
-            if (!currentUser) return;
+        function displayDeviceLimitModal(accounts) {
+            const modal = document.getElementById('device-limit-modal');
+            const countElem = document.getElementById('device-account-count');
+            const listElem = document.getElementById('device-account-list');
+
+            countElem.innerText = accounts.length;
+            listElem.innerHTML = '';
+
+            accounts.forEach(acc => {
+                const card = document.createElement('div');
+                card.className = 'device-account-card';
+                card.innerHTML = `
+                    <div>
+                        <div style="color: #fff; font-weight: 700; font-size: 0.9rem;">@${escapeHtml(acc.username)}</div>
+                        <div style="color: #64748b; font-size: 0.75rem;">${escapeHtml(acc.email)}</div>
+                    </div>
+                    <button onclick="promptDeleteDeviceAccount(${acc.id}, '${escapeHtml(acc.username)}')" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Delete Account</button>
+                `;
+                listElem.appendChild(card);
+            });
+
+            modal.classList.remove('hidden');
+        }
+
+        function promptDeleteDeviceAccount(userId, username) {
+            targetDeleteUserId = userId;
+            document.getElementById('delete-confirm-label').innerText = `Confirm password to delete @${username}:`;
+            document.getElementById('delete-confirmation-box').classList.remove('hidden');
+            document.getElementById('delete-account-password').focus();
+        }
+
+        function cancelAccountDeletion() {
+            targetDeleteUserId = null;
+            document.getElementById('delete-account-password').value = '';
+            document.getElementById('delete-confirmation-box').classList.add('hidden');
+        }
+
+        async function confirmAccountDeletion() {
+            if (!targetDeleteUserId) return;
+
+            const password = document.getElementById('delete-account-password').value;
+            const deviceId = getOrCreateDeviceId();
+
+            if (!password) {
+                alert('Please enter the password for this account to confirm deletion.');
+                return;
+            }
+
             try {
-                const res = await fetch('/api/blocks', { credentials: 'include' });
+                const res = await fetch('/api/delete-device-account', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        target_user_id: targetDeleteUserId,
+                        password,
+                        device_id: deviceId
+                    })
+                });
+
+                const data = await res.json();
+
                 if (res.ok) {
-                    blockedUserIds = await res.json();
+                    alert(data.message);
+                    cancelAccountDeletion();
+
+                    if (data.can_proceed) {
+                        document.getElementById('device-limit-modal').classList.add('hidden');
+                        window.location.reload();
+                    } else {
+                        displayDeviceLimitModal(data.accounts);
+                    }
+                } else {
+                    alert(data.error || 'Failed to delete account.');
                 }
-            } catch (e) {
-                blockedUserIds = [];
+            } catch (err) {
+                alert('Connection error deleting account.');
             }
         }
 
-        async function fetchFollowingList() {
-            if (!currentUser) return;
+        function renderEmojiGrid() {
+            const grid = document.getElementById('emoji-badge-grid');
+            if (!grid) return;
+            grid.innerHTML = '';
+
+            EMOJI_BADGES.forEach(emoji => {
+                const item = document.createElement('div');
+                item.className = `emoji-option ${selectedBadgeEmoji === emoji ? 'selected' : ''}`;
+                item.innerText = emoji;
+                item.onclick = () => {
+                    selectedBadgeEmoji = emoji;
+                    document.querySelectorAll('.emoji-option').forEach(el => el.classList.remove('selected'));
+                    item.classList.add('selected');
+                };
+                grid.appendChild(item);
+            });
+        }
+
+        // --- CLIENT-SIDE NSFW CLASSIFIER ---
+
+        async function scanNsfwOnClient(base64Img) {
+            if (!base64Img) return false;
+
             try {
-                const res = await fetch('/api/following', { credentials: 'include' });
-                if (res.ok) {
-                    followingUserIds = await res.json();
+                if (!clientNsfwModel) {
+                    clientNsfwModel = await nsfwjs.load('/model/', { type: 'graph' });
                 }
-            } catch (e) {
-                followingUserIds = [];
+
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = base64Img;
+
+                    img.onload = async () => {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = 224;
+                            canvas.height = 224;
+                            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                            ctx.drawImage(img, 0, 0, 224, 224);
+
+                            const predictions = await clientNsfwModel.classify(canvas);
+
+                            const scores = {};
+                            predictions.forEach(p => scores[p.className] = p.probability);
+
+                            const hentai = scores['Hentai'] || 0;
+                            const porn = scores['Porn'] || 0;
+                            const sexy = scores['Sexy'] || 0;
+                            const drawing = scores['Drawing'] || 0;
+
+                            const isExplicitNudity = (porn > 0.15 || hentai > 0.15);
+                            const isArtisticNudity = (drawing > 0.30 && (sexy > 0.18 || hentai > 0.04));
+
+                            const imageData = ctx.getImageData(0, 0, 224, 224).data;
+                            let skinPixelCount = 0;
+                            const totalPixels = 224 * 224;
+
+                            for (let i = 0; i < imageData.length; i += 4) {
+                                const r = imageData[i];
+                                const g = imageData[i + 1];
+                                const b = imageData[i + 2];
+
+                                const isBareSkin = (
+                                    (r > 80 && g > 30 && b > 15 && (Math.max(r, g, b) - Math.min(r, g, b) > 10) && r > b) ||
+                                    (r > 180 && g > 170 && b > 150 && Math.abs(r - g) <= 30)
+                                );
+
+                                if (isBareSkin) skinPixelCount++;
+                            }
+
+                            const skinRatio = skinPixelCount / totalPixels;
+                            const isLackingGarments = (skinRatio > 0.25 && (sexy > 0.15 || hentai > 0.05 || porn > 0.05));
+
+                            resolve(isExplicitNudity || isArtisticNudity || isLackingGarments);
+                        } catch (err) {
+                            resolve(false);
+                        }
+                    };
+
+                    img.onerror = () => resolve(false);
+                });
+            } catch (err) {
+                return false;
             }
         }
+
+        // --- SOCKET CONNECTION & TYPING INDICATORS ---
 
         function initSocketConnection() {
             if (!socket) {
@@ -326,19 +1345,27 @@
                     }
                 });
 
-                socket.on('dm_typing_indicator', (data) => {
+                socket.on('user_typing_start', (data) => {
                     if (currentActiveDmUserId && Number(data.sender_id) === Number(currentActiveDmUserId)) {
-                        const statusElem = document.getElementById('dm-typing-status');
-                        if (data.is_typing) {
-                            statusElem.classList.remove('hidden');
-                        } else {
-                            statusElem.classList.add('hidden');
-                        }
+                        const indicator = document.getElementById('dm-typing-indicator');
+                        indicator.innerText = `@${data.sender_username} is typing...`;
+                        indicator.classList.remove('hidden');
                     }
+                });
+
+                socket.on('user_typing_stop', (data) => {
+                    if (currentActiveDmUserId && Number(data.sender_id) === Number(currentActiveDmUserId)) {
+                        document.getElementById('dm-typing-indicator').classList.add('hidden');
+                    }
+                });
+
+                socket.on('error_message', (data) => {
+                    alert(data.error);
                 });
 
                 socket.on('new_public_post', (post) => {
                     if (blockedUserIds.includes(Number(post.user_id))) return;
+
                     if (currentFeedTab === 'public' || (currentFeedTab === 'following' && followingUserIds.includes(Number(post.user_id)))) {
                         if (!post.is_18plus || show18Plus) {
                             renderSinglePost(post, true);
@@ -348,7 +1375,9 @@
 
                 socket.on('post_deleted', (data) => {
                     const postElem = document.getElementById(`post-card-${data.id}`);
-                    if (postElem) postElem.remove();
+                    if (postElem) {
+                        postElem.remove();
+                    }
                 });
 
                 socket.on('receive_direct_message', (msg) => {
@@ -359,6 +1388,14 @@
 
                     if (isCurrentChatRecipient) {
                         appendDmToChat(msg);
+                    }
+                });
+
+                socket.on('dm_notification', (data) => {
+                    if (!currentActiveDmUserId || Number(currentActiveDmUserId) !== Number(data.sender_id)) {
+                        unreadDmSenders.add(Number(data.sender_id));
+                        showDmToast(data.sender_id, data.sender_username, data.message);
+                        updateDmBadgesOnFeed();
                     }
                 });
 
@@ -378,14 +1415,647 @@
         }
 
         function handleDmTypingInput() {
-            if (!socket || !currentActiveDmUserId) return;
+            if (!currentActiveDmUserId || !socket) return;
 
-            socket.emit('dm_typing', { receiver_id: currentActiveDmUserId });
+            socket.emit('typing_start', { receiver_id: currentActiveDmUserId });
 
             clearTimeout(typingTimeout);
             typingTimeout = setTimeout(() => {
-                socket.emit('dm_stop_typing', { receiver_id: currentActiveDmUserId });
+                socket.emit('typing_stop', { receiver_id: currentActiveDmUserId });
             }, 1500);
+        }
+
+        function showDmToast(senderId, senderUsername, messageSnippet) {
+            const toast = document.getElementById('dm-toast');
+            const toastTitle = document.getElementById('dm-toast-title');
+            const toastBody = document.getElementById('dm-toast-body');
+
+            toastTitle.innerText = `New message from @${senderUsername}`;
+            toastBody.innerText = messageSnippet.length > 35 ? messageSnippet.substring(0, 35) + '...' : messageSnippet;
+
+            toast.onclick = () => {
+                openDmDrawer(senderId, senderUsername);
+                closeToast();
+            };
+
+            toast.classList.remove('hidden');
+
+            setTimeout(() => {
+                closeToast();
+            }, 5000);
+        }
+
+        function closeToast() {
+            document.getElementById('dm-toast').classList.add('hidden');
+        }
+
+        function updateDmBadgesOnFeed() {
+            document.querySelectorAll('.btn-dm-card').forEach(btn => {
+                const userId = Number(btn.getAttribute('data-user-id'));
+                if (unreadDmSenders.has(userId)) {
+                    btn.style.position = 'relative';
+                    btn.style.border = '1px solid #f43f5e';
+                    btn.innerHTML = `💬 DM <span style="position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; background: #f43f5e; border-radius: 50%;"></span>`;
+                }
+            });
+        }
+
+        function openInboxModal() {
+            document.getElementById('inbox-modal').classList.remove('hidden');
+            const listContainer = document.getElementById('inbox-user-list');
+            listContainer.innerHTML = '';
+
+            const userMap = new Map();
+            document.querySelectorAll('.msg-card').forEach(card => {
+                const author = card.querySelector('.msg-author')?.innerText;
+                const dmBtn = card.querySelector('.btn-dm-card');
+                const userId = dmBtn ? dmBtn.getAttribute('data-user-id') : null;
+
+                if (author && userId && currentUser && Number(userId) !== Number(currentUser.id)) {
+                    userMap.set(userId, author);
+                }
+            });
+
+            if (userMap.size === 0) {
+                listContainer.innerHTML = '<p style="color: #64748b; font-size: 0.85rem;">No active users found in feed.</p>';
+                return;
+            }
+
+            userMap.forEach((username, userId) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'padding: 8px 12px; background: #0f172a; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border: 1px solid #334155;';
+                row.innerHTML = `<span style="color: #fff; font-weight: 600;">@${username}</span> <button class="btn-small" style="background: #0284c7;">Chat</button>`;
+                row.onclick = () => {
+                    closeInboxModal();
+                    openDmDrawer(userId, username);
+                };
+                listContainer.appendChild(row);
+            });
+        }
+
+        function closeInboxModal() {
+            document.getElementById('inbox-modal').classList.add('hidden');
+        }
+
+        async function openDmDrawer(targetUserId, targetUsername) {
+            currentActiveDmUserId = targetUserId;
+            document.getElementById('dm-recipient-title').innerText = `@${targetUsername}`;
+            document.getElementById('dm-modal').classList.remove('hidden');
+            
+            unreadDmSenders.delete(Number(targetUserId));
+            updateDmBadgesOnFeed();
+
+            initSocketConnection();
+
+            const res = await fetch(`/api/dms/${targetUserId}`, { credentials: 'include' });
+            if (res.ok) {
+                const history = await res.json();
+                const historyBox = document.getElementById('dm-chat-history');
+                historyBox.innerHTML = '';
+                history.forEach(msg => appendDmToChat(msg));
+            }
+        }
+
+        function closeDmDrawer() {
+            document.getElementById('dm-modal').classList.add('hidden');
+            currentActiveDmUserId = null;
+        }
+
+        function appendDmToChat(msg) {
+            const historyBox = document.getElementById('dm-chat-history');
+            const isMine = currentUser && Number(msg.sender_id) === Number(currentUser.id);
+            
+            const bubble = document.createElement('div');
+            bubble.style.cssText = `
+                max-width: 80%; 
+                padding: 8px 12px; 
+                border-radius: 8px; 
+                align-self: ${isMine ? 'flex-end' : 'flex-start'}; 
+                background: ${isMine ? '#6366f1' : '#334155'}; 
+                color: #fff; 
+                font-size: 0.85rem;
+            `;
+
+            let mediaMarkup = '';
+            if (msg.media_url) {
+                if (msg.media_type === 'video') {
+                    mediaMarkup = `<video src="${msg.media_url}" controls style="max-width: 100%; border-radius: 4px; margin-top: 4px;"></video>`;
+                } else {
+                    mediaMarkup = `<img src="${msg.media_url}" style="max-width: 100%; border-radius: 4px; margin-top: 4px;" alt="Media">`;
+                }
+            }
+
+            bubble.innerHTML = `<div>${escapeHtml(msg.message || '')}</div>${mediaMarkup}`;
+            historyBox.appendChild(bubble);
+            historyBox.scrollTop = historyBox.scrollHeight;
+        }
+
+        function submitDirectMessage() {
+            const input = document.getElementById('dm-input-text');
+            const text = input.value.trim();
+
+            if ((!text && !selectedMediaUrl) || !currentActiveDmUserId) return;
+
+            socket.emit('typing_stop', { receiver_id: currentActiveDmUserId });
+
+            socket.emit('send_direct_message', {
+                receiver_id: currentActiveDmUserId,
+                message: text,
+                media_url: selectedMediaUrl,
+                media_type: selectedMediaType,
+                is_18plus: false
+            });
+
+            input.value = '';
+            selectedMediaUrl = null;
+            selectedMediaType = 'image';
+            document.getElementById('giphy-picker').classList.add('hidden');
+        }
+
+        function toggleGiphyPicker() {
+            const picker = document.getElementById('giphy-picker');
+            picker.classList.toggle('hidden');
+            if (!picker.classList.contains('hidden')) {
+                searchGiphy('anime');
+            }
+        }
+
+        async function searchGiphy(query) {
+            if (!query) return;
+            try {
+                const res = await fetch(`https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(query)}&limit=9&rating=g`);
+                const data = await res.json();
+                
+                const resultsBox = document.getElementById('giphy-results');
+                resultsBox.innerHTML = '';
+                
+                if (data.data) {
+                    data.data.forEach(gif => {
+                        const imgUrl = gif.images.fixed_height_small.url;
+                        const img = document.createElement('img');
+                        img.src = imgUrl;
+                        img.style.cssText = 'width: 100%; height: 60px; object-fit: cover; cursor: pointer; border-radius: 4px;';
+                        img.onclick = () => {
+                            selectedMediaUrl = gif.images.original.url;
+                            selectedMediaType = 'gif';
+                            submitDirectMessage();
+                        };
+                        resultsBox.appendChild(img);
+                    });
+                }
+            } catch (e) {
+                console.error('Giphy API Error:', e);
+            }
+        }
+
+        async function handleGifUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (file.size > 10 * 1024 * 1024) {
+                alert('GIF files must be under 10MB.');
+                return;
+            }
+
+            try {
+                const base64Gif = await convertFileToBase64(file);
+                
+                const detectedNsfw = await scanNsfwOnClient(base64Gif);
+                if (detectedNsfw && currentUser && currentUser.is_minor) {
+                    alert('Explicit content detected in GIF. Minors cannot upload mature media.');
+                    return;
+                }
+
+                selectedMediaUrl = base64Gif;
+                selectedMediaType = 'gif';
+                submitDirectMessage();
+            } catch (err) {
+                alert('Failed to process GIF upload.');
+            }
+        }
+
+        async function handleVideoUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (file.size > 15 * 1024 * 1024) {
+                alert('Video files must be under 15MB.');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('upload_preset', CLOUDINARY_PRESET);
+
+            try {
+                const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (data.secure_url) {
+                    selectedMediaUrl = data.secure_url;
+                    selectedMediaType = 'video';
+                    submitDirectMessage();
+                } else {
+                    alert('Video upload failed.');
+                }
+            } catch (e) {
+                alert('Cloudinary upload error.');
+            }
+        }
+
+        // --- REPORTING & BLOCKING MODAL LOGIC ---
+
+        function openReportModal(postId) {
+            if (!currentUser) {
+                window.location.href = 'auth.html';
+                return;
+            }
+            reportingPostId = postId;
+            document.getElementById('report-reason-input').value = '';
+            document.getElementById('report-modal').classList.remove('hidden');
+        }
+
+        function closeReportModal() {
+            reportingPostId = null;
+            document.getElementById('report-modal').classList.add('hidden');
+        }
+
+        async function submitReport() {
+            if (!reportingPostId) return;
+
+            const reason = document.getElementById('report-reason-input').value.trim();
+            if (!reason) {
+                alert('Please provide a reason for the report.');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/reports', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ post_id: reportingPostId, reason })
+                });
+
+                const data = await res.json();
+                if (res.ok) {
+                    alert(data.message);
+                    closeReportModal();
+                } else {
+                    alert(data.error || 'Failed to submit report.');
+                }
+            } catch (err) {
+                alert('Error submitting report.');
+            }
+        }
+
+        async function toggleBlockUser(targetUserId) {
+            if (!currentUser) {
+                window.location.href = 'auth.html';
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/block/${targetUserId}`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    alert(data.message);
+                    await fetchBlockList();
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to update block state.');
+                }
+            } catch (err) {
+                alert('Error processing block request.');
+            }
+        }
+
+        async function fetchBlockList() {
+            if (!currentUser) {
+                blockedUserIds = [];
+                return;
+            }
+            try {
+                const res = await fetch('/api/blocks', { credentials: 'include' });
+                if (res.ok) {
+                    blockedUserIds = await res.json();
+                }
+            } catch (e) {
+                blockedUserIds = [];
+            }
+        }
+
+        // --- AVATAR & PROFILE BADGES MODAL LOGIC ---
+
+        function openAvatarModal() {
+            if (!currentUser) return;
+            document.getElementById('avatar-style-select').value = currentUser.avatar_style || 'bottts';
+            document.getElementById('avatar-seed-input').value = currentUser.avatar_seed || currentUser.username;
+            document.getElementById('profile-title-input').value = currentUser.title || 'Novice Adventurer';
+            selectedBadgeEmoji = currentUser.badge || '⭐';
+
+            pendingCustomAvatarBase64 = currentUser.custom_avatar_url || null;
+            
+            if (pendingCustomAvatarBase64) {
+                document.getElementById('clear-custom-avatar-btn').classList.remove('hidden');
+            } else {
+                document.getElementById('clear-custom-avatar-btn').classList.add('hidden');
+            }
+
+            renderEmojiGrid();
+            updateAvatarModalPreview();
+            document.getElementById('avatar-modal').classList.remove('hidden');
+        }
+
+        function closeAvatarModal() {
+            document.getElementById('avatar-modal').classList.add('hidden');
+        }
+
+        async function handleCustomAvatarSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                pendingCustomAvatarBase64 = await convertFileToBase64(file);
+                document.getElementById('clear-custom-avatar-btn').classList.remove('hidden');
+                updateAvatarModalPreview();
+            }
+        }
+
+        function clearCustomAvatarUpload() {
+            pendingCustomAvatarBase64 = null;
+            document.getElementById('custom-avatar-file').value = '';
+            document.getElementById('clear-custom-avatar-btn').classList.add('hidden');
+            updateAvatarModalPreview();
+        }
+
+        function updateAvatarModalPreview() {
+            if (pendingCustomAvatarBase64) {
+                document.getElementById('avatar-modal-preview').src = pendingCustomAvatarBase64;
+                return;
+            }
+
+            const style = document.getElementById('avatar-style-select').value;
+            const seed = document.getElementById('avatar-seed-input').value || 'preview';
+            const url = `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(seed)}`;
+            document.getElementById('avatar-modal-preview').src = url;
+        }
+
+        async function saveAvatarSelection() {
+            const style = document.getElementById('avatar-style-select').value;
+            const seed = document.getElementById('avatar-seed-input').value || currentUser.username;
+            const customTitle = document.getElementById('profile-title-input').value;
+
+            try {
+                const res = await fetch('/api/avatar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ 
+                        avatar_style: style, 
+                        avatar_seed: seed,
+                        custom_avatar_url: pendingCustomAvatarBase64,
+                        title: customTitle,
+                        badge: selectedBadgeEmoji
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    currentUser.avatar_style = style;
+                    currentUser.avatar_seed = seed;
+                    currentUser.custom_avatar_url = pendingCustomAvatarBase64;
+                    currentUser.avatar_url = data.avatar_url;
+                    currentUser.title = data.title;
+                    currentUser.badge = data.badge;
+                    
+                    updateUIState();
+                    closeAvatarModal();
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to save profile.');
+                }
+            } catch (err) {
+                console.error('Save profile error:', err);
+            }
+        }
+
+        // --- MEME STUDIO LOGIC ---
+
+        function handleImageSelect(event) {
+            const file = event.target.files[0];
+            const studioBtn = document.getElementById('meme-studio-btn');
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    selectedOriginalImage = new Image();
+                    selectedOriginalImage.src = e.target.result;
+                    selectedOriginalImage.onload = () => {
+                        editedBase64Image = null;
+                        studioBtn.classList.remove('hidden');
+                    };
+                };
+                reader.readAsDataURL(file);
+            } else {
+                selectedOriginalImage = null;
+                editedBase64Image = null;
+                studioBtn.classList.add('hidden');
+            }
+        }
+
+        function openMemeStudio() {
+            if (!selectedOriginalImage) return;
+            document.getElementById('meme-modal').classList.remove('hidden');
+            renderMemeCanvas();
+        }
+
+        function closeMemeStudio() {
+            document.getElementById('meme-modal').classList.add('hidden');
+        }
+
+        function renderMemeCanvas() {
+            if (!selectedOriginalImage) return;
+
+            const canvas = document.getElementById('meme-canvas');
+            const ctx = canvas.getContext('2d');
+
+            const maxDimension = 600;
+            let width = selectedOriginalImage.width;
+            let height = selectedOriginalImage.height;
+
+            if (width > maxDimension || height > maxDimension) {
+                if (width > height) {
+                    height = Math.round((height * maxDimension) / width);
+                    width = maxDimension;
+                } else {
+                    width = Math.round((width * maxDimension) / height);
+                    height = maxDimension;
+                }
+            }
+
+            canvas.width = width;
+            canvas.height = height;
+
+            ctx.clearRect(0, 0, width, height);
+
+            const filter = document.getElementById('meme-filter-select').value;
+            if (filter === 'grayscale') {
+                ctx.filter = 'grayscale(100%)';
+            } else if (filter === 'invert') {
+                ctx.filter = 'invert(100%) hue-rotate(180deg)';
+            } else if (filter === 'cyberpunk') {
+                ctx.filter = 'contrast(130%) saturate(180%) hue-rotate(-20deg)';
+            } else {
+                ctx.filter = 'none';
+            }
+
+            ctx.drawImage(selectedOriginalImage, 0, 0, width, height);
+            ctx.filter = 'none';
+
+            const topText = document.getElementById('meme-top-text').value.toUpperCase();
+            const bottomText = document.getElementById('meme-bottom-text').value.toUpperCase();
+
+            const fontSize = Math.floor(width / 12);
+            ctx.font = `900 ${fontSize}px sans-serif`;
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = Math.floor(fontSize / 8);
+            ctx.textAlign = 'center';
+
+            if (topText) {
+                ctx.textBaseline = 'top';
+                ctx.strokeText(topText, width / 2, 10);
+                ctx.fillText(topText, width / 2, 10);
+            }
+
+            if (bottomText) {
+                ctx.textBaseline = 'bottom';
+                ctx.strokeText(bottomText, width / 2, height - 10);
+                ctx.fillText(bottomText, width / 2, height - 10);
+            }
+        }
+
+        function applyMemeCanvasToPost() {
+            const canvas = document.getElementById('meme-canvas');
+            editedBase64Image = canvas.toDataURL('image/jpeg', 0.65);
+            alert('Image edits applied successfully!');
+            closeMemeStudio();
+        }
+
+        // --- FEED RENDERER WITH REPORTING, BLOCKING, SPOILERS, & BADGES ---
+
+        function updateNsfwBadge() {
+            const badge = document.getElementById('nsfw-status-badge');
+            const nsfwToggle = document.getElementById('nsfw-toggle');
+
+            if (currentUser && currentUser.is_minor) {
+                show18Plus = false;
+                localStorage.setItem('show18Plus', 'false');
+
+                if (badge) {
+                    badge.innerText = '(Locked: Under 18)';
+                    badge.style.color = '#ef4444';
+                }
+                if (nsfwToggle) {
+                    nsfwToggle.checked = false;
+                    nsfwToggle.disabled = true;
+                }
+                return;
+            }
+
+            if (nsfwToggle) {
+                nsfwToggle.disabled = false;
+                nsfwToggle.checked = show18Plus;
+            }
+
+            if (badge) {
+                badge.innerText = show18Plus ? '(18+ Visible)' : '(18+ Hidden)';
+                badge.style.color = show18Plus ? '#f43f5e' : '#94a3b8';
+            }
+        }
+
+        async function handleNsfwToggleChange(checkbox) {
+            if (checkbox.checked) {
+                if (!currentUser) {
+                    alert('Please log in to verify your date of birth and access 18+ content.');
+                    checkbox.checked = false;
+                    window.location.href = 'auth.html';
+                    return;
+                }
+
+                if (currentUser.is_minor) {
+                    alert('18+ content is locked for accounts registered as minors.');
+                    checkbox.checked = false;
+                    return;
+                }
+
+                if (!currentUser.birthdate) {
+                    checkbox.checked = false;
+                    document.getElementById('age-modal').classList.remove('hidden');
+                    return;
+                }
+
+                show18Plus = true;
+            } else {
+                show18Plus = false;
+            }
+
+            localStorage.setItem('show18Plus', show18Plus);
+            updateNsfwBadge();
+            loadMessages();
+        }
+
+        async function submitBirthdateVerification(event) {
+            event.preventDefault();
+            const birthdateValue = document.getElementById('birthdate-input').value;
+            if (!birthdateValue) return;
+
+            try {
+                const res = await fetch('/api/verify-birthdate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ birthdate: birthdateValue })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    currentUser.birthdate = birthdateValue;
+                    currentUser.is_minor = data.is_minor;
+                    currentUser.age_verified = data.age_verified;
+
+                    document.getElementById('age-modal').classList.add('hidden');
+
+                    if (data.is_minor) {
+                        alert(data.message);
+                        show18Plus = false;
+                    } else {
+                        alert('Birthdate verified! 18+ content access granted.');
+                        show18Plus = true;
+                    }
+
+                    localStorage.setItem('show18Plus', show18Plus);
+                    updateNsfwBadge();
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Verification failed.');
+                }
+            } catch (err) {
+                console.error('Birthdate verification error:', err);
+            }
+        }
+
+        function cancelAgeVerification() {
+            document.getElementById('age-modal').classList.add('hidden');
+            document.getElementById('nsfw-toggle').checked = false;
+            show18Plus = false;
+            localStorage.setItem('show18Plus', 'false');
+            updateNsfwBadge();
         }
 
         function updateUIState() {
@@ -394,12 +2064,17 @@
             const inboxBtn = document.getElementById('inbox-btn');
             const userStatus = document.getElementById('user-status');
             const userAvatarPreview = document.getElementById('user-avatar-preview');
+            const userBadgeHeader = document.getElementById('user-badge-header');
+            const userTitleHeader = document.getElementById('user-title-header');
             const postForm = document.getElementById('post-form');
             const loginNotice = document.getElementById('login-notice');
+            const post18plusWrapper = document.getElementById('post-18plus-wrapper');
 
             if (currentUser) {
                 if (userStatus) userStatus.innerText = `@${currentUser.username}`;
                 if (userAvatarPreview && currentUser.avatar_url) userAvatarPreview.src = currentUser.avatar_url;
+                if (userBadgeHeader) userBadgeHeader.innerText = currentUser.badge || '⭐';
+                if (userTitleHeader) userTitleHeader.innerText = currentUser.title || 'Novice Adventurer';
 
                 if (authBtn) authBtn.innerText = 'Logout';
                 if (avatarBtn) avatarBtn.classList.remove('hidden');
@@ -409,9 +2084,15 @@
                 
                 const authorInput = document.getElementById('post-author');
                 if (authorInput) authorInput.value = currentUser.username;
+
+                if (currentUser.is_minor && post18plusWrapper) {
+                    post18plusWrapper.style.display = 'none';
+                }
             } else {
                 if (userStatus) userStatus.innerText = 'Not logged in';
                 if (userAvatarPreview) userAvatarPreview.src = 'https://api.dicebear.com/7.x/bottts/svg?seed=guest';
+                if (userBadgeHeader) userBadgeHeader.innerText = '';
+                if (userTitleHeader) userTitleHeader.innerText = '';
 
                 if (authBtn) authBtn.innerText = 'Login / Register';
                 if (avatarBtn) avatarBtn.classList.add('hidden');
@@ -419,13 +2100,46 @@
                 if (postForm) postForm.classList.add('hidden');
                 if (loginNotice) loginNotice.classList.remove('hidden');
             }
+            updateNsfwBadge();
+        }
+
+        async function fetchFollowingList() {
+            if (!currentUser) {
+                followingUserIds = [];
+                return;
+            }
+            try {
+                const res = await fetch('/api/following', { credentials: 'include' });
+                if (res.ok) {
+                    followingUserIds = await res.json();
+                }
+            } catch (e) {
+                followingUserIds = [];
+            }
+        }
+
+        function handleAuthButtonClick() {
+            if (currentUser) {
+                handleLogout();
+            } else {
+                window.location.href = 'auth.html';
+            }
+        }
+
+        function switchFeedTab(tab) {
+            currentFeedTab = tab;
+            const publicBtn = document.getElementById('tab-public');
+            const followingBtn = document.getElementById('tab-following');
+
+            if (publicBtn) publicBtn.classList.toggle('active', tab === 'public');
+            if (followingBtn) followingBtn.classList.toggle('active', tab === 'following');
+            
+            loadMessages();
         }
 
         function renderSinglePost(msg, prepend = false) {
             const messagesContainer = document.getElementById('messages');
             if (!messagesContainer) return;
-
-            if (blockedUserIds.includes(Number(msg.user_id))) return;
 
             const emptyMsg = messagesContainer.querySelector('.empty-msg');
             if (emptyMsg) emptyMsg.remove();
@@ -441,7 +2155,7 @@
                 if (msg.is_18plus) {
                     imageHtml = `
                         <div class="nsfw-overlay-container">
-                            <img src="${msg.image_url}" class="msg-img blurred-image" onclick="this.classList.toggle('unblurred')" alt="18+ Content">
+                            <img src="${msg.image_url}" class="msg-img blurred-image" onclick="this.classList.toggle('unblurred')" alt="18+ Content (Click to Reveal)">
                         </div>
                     `;
                 } else if (msg.is_spoiler) {
@@ -476,29 +2190,64 @@
                 (currentUser.username === msg.name)
             );
 
-            let actionBtnsHtml = '';
+            let deleteBtnHtml = '';
             if (isOwner) {
-                actionBtnsHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
-            } else if (currentUser) {
-                const isBlocked = blockedUserIds.includes(Number(msg.user_id));
-                actionBtnsHtml = `
-                    <button onclick="openReportModal(${msg.id}, ${msg.user_id})" class="btn-small" style="background: #f59e0b; padding: 2px 6px;">🚩 Report</button>
-                    <button onclick="toggleBlockUser(${msg.user_id})" class="btn-small" style="background: #ef4444; padding: 2px 6px;">${isBlocked ? 'Unblock' : 'Block'}</button>
-                `;
+                deleteBtnHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
+            }
+
+            let followBtnHtml = '';
+            let dmBtnHtml = '';
+            let blockBtnHtml = '';
+            let reportBtnHtml = `<button onclick="openReportModal(${msg.id})" class="btn-report">🚩 Report</button>`;
+
+            const targetId = msg.user_id;
+
+            if (currentUser && !isOwner && targetId) {
+                const isFollowing = followingUserIds.includes(Number(targetId));
+                const isBlocked = blockedUserIds.includes(Number(targetId));
+
+                const followText = isFollowing ? 'Unfollow' : 'Follow';
+                const followClass = isFollowing ? 'btn-unfollow' : 'btn-follow';
+                followBtnHtml = `<button onclick="toggleFollow(${targetId})" class="${followClass}">${followText}</button>`;
+                
+                dmBtnHtml = `<button onclick="openDmDrawer(${targetId}, '${escapeHtml(msg.name)}')" class="btn-small btn-dm-card" data-user-id="${targetId}" style="background: #0284c7; padding: 2px 8px;">💬 DM</button>`;
+
+                const blockText = isBlocked ? 'Unblock' : 'Block';
+                blockBtnHtml = `<button onclick="toggleBlockUser(${targetId})" class="btn-block ${isBlocked ? 'blocked' : ''}">${blockText}</button>`;
+            }
+
+            let nsfwBadgeHtml = '';
+            if (msg.is_18plus) {
+                nsfwBadgeHtml = `<span style="background: #f43f5e; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 700;">18+</span>`;
+            }
+
+            let spoilerBadgeHtml = '';
+            if (msg.is_spoiler) {
+                spoilerBadgeHtml = `<span class="spoiler-badge">Spoiler</span>`;
             }
 
             const avatarUrl = msg.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(msg.name || 'user')}`;
             const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
+            const userBadge = msg.badge || '⭐';
+            const userTitle = msg.title || 'Novice Adventurer';
 
             card.innerHTML = `
                 <div class="msg-header">
                     <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                         <img src="${avatarUrl}" style="width: 32px; height: 32px; border-radius: 50%; border: 1px solid #818cf8; background: #0f172a; object-fit: cover;" alt="Avatar">
                         <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
+                        <span>${userBadge}</span>
+                        <span class="user-title-badge">${escapeHtml(userTitle)}</span>
+                        ${nsfwBadgeHtml}
+                        ${spoilerBadgeHtml}
+                        ${followBtnHtml}
+                        ${dmBtnHtml}
+                        ${blockBtnHtml}
                     </div>
                     <div class="msg-meta">
                         <span class="msg-date">${dateStr}</span>
-                        ${actionBtnsHtml}
+                        ${reportBtnHtml}
+                        ${deleteBtnHtml}
                     </div>
                 </div>
                 ${textHtml}
@@ -510,6 +2259,8 @@
             } else {
                 messagesContainer.appendChild(card);
             }
+
+            updateDmBadgesOnFeed();
         }
 
         async function loadMessages() {
@@ -530,15 +2281,180 @@
                 messages.forEach(msg => renderSinglePost(msg, false));
             } catch (err) {
                 console.error('Error loading messages:', err);
+                messagesContainer.innerHTML = `<p class="error-msg">Failed to load posts from database.</p>`;
             }
         }
 
-        function handleAuthButtonClick() {
-            if (currentUser) {
-                handleLogout();
-            } else {
+        async function toggleFollow(targetUserId) {
+            if (!currentUser) {
                 window.location.href = 'auth.html';
+                return;
             }
+
+            try {
+                const res = await fetch(`/api/follow/${targetUserId}`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                if (res.ok) {
+                    await fetchFollowingList();
+                    loadMessages();
+                }
+            } catch (err) {
+                console.error('Follow error:', err);
+            }
+        }
+
+        async function deletePost(postId) {
+            if (!confirm('Are you sure you want to delete this post?')) return;
+
+            try {
+                await fetch(`/api/messages/${postId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+            } catch (err) {
+                console.error('Delete error:', err);
+            }
+        }
+
+        // --- SUBMIT POST HANDLER ---
+
+        async function handlePostSubmit(event) {
+            event.preventDefault();
+            if (!currentUser) {
+                window.location.href = 'auth.html';
+                return;
+            }
+
+            const contentInput = document.getElementById('post-content').value.trim();
+            const imageFileInput = document.getElementById('post-image').files[0];
+            let is18PlusCheckbox = document.getElementById('post-is-18plus').checked;
+            let isSpoilerCheckbox = document.getElementById('post-is-spoiler').checked;
+            const submitBtn = document.getElementById('submit-btn');
+
+            let base64Image = editedBase64Image;
+
+            if (!base64Image && imageFileInput) {
+                try {
+                    submitBtn.innerText = 'Compressing Image...';
+                    base64Image = await convertFileToBase64(imageFileInput);
+                } catch (err) {
+                    alert('Failed to process image file.');
+                    submitBtn.innerText = 'Submit Post';
+                    return;
+                }
+            }
+
+            if (!contentInput && !base64Image) {
+                alert('Please enter a message or select an image to post.');
+                return;
+            }
+
+            if (base64Image) {
+                submitBtn.innerText = 'Scanning Image...';
+                const detectedNsfw = await scanNsfwOnClient(base64Image);
+
+                if (detectedNsfw) {
+                    is18PlusCheckbox = true;
+
+                    if (currentUser.is_minor) {
+                        alert('Explicit content detected. Accounts under 18 cannot upload mature imagery.');
+                        submitBtn.disabled = false;
+                        submitBtn.innerText = 'Submit Post';
+                        return;
+                    }
+
+                    if (!currentUser.age_verified) {
+                        alert('Explicit content detected. Please verify your age with a birthdate.');
+                        submitBtn.disabled = false;
+                        submitBtn.innerText = 'Submit Post';
+                        return;
+                    }
+                }
+            }
+
+            submitBtn.disabled = true;
+            submitBtn.innerText = 'Posting...';
+
+            try {
+                const response = await fetch('/api/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ 
+                        message: contentInput, 
+                        image_url: base64Image,
+                        is_18plus: is18PlusCheckbox,
+                        is_spoiler: isSpoilerCheckbox
+                    })
+                });
+
+                if (response.ok) {
+                    document.getElementById('post-content').value = '';
+                    document.getElementById('post-image').value = '';
+                    document.getElementById('post-is-18plus').checked = false;
+                    document.getElementById('post-is-spoiler').checked = false;
+                    document.getElementById('meme-studio-btn').classList.add('hidden');
+                    selectedOriginalImage = null;
+                    editedBase64Image = null;
+                } else {
+                    const data = await response.json();
+                    alert(data.error || 'Failed to submit post.');
+                }
+            } catch (err) {
+                alert('Network connection error.');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerText = 'Submit Post';
+            }
+        }
+
+        function convertFileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+
+                if (file.type === 'image/gif') {
+                    reader.onload = (event) => resolve(event.target.result);
+                    reader.onerror = (err) => reject(err);
+                    reader.readAsDataURL(file);
+                    return;
+                }
+
+                reader.readAsDataURL(file);
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+
+                        const maxWidth = 800;
+                        const maxHeight = 800;
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > maxWidth || height > maxHeight) {
+                            if (width > height) {
+                                height = Math.round((height * maxWidth) / width);
+                                width = maxWidth;
+                            } else {
+                                width = Math.round((width * maxHeight) / height);
+                                height = maxHeight;
+                            }
+                        }
+
+                        canvas.width = width;
+                        canvas.height = height;
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.65);
+                        resolve(compressedBase64);
+                    };
+                    img.onerror = (err) => reject(err);
+                };
+                reader.onerror = (err) => reject(err);
+            });
         }
 
         async function handleLogout() {
@@ -546,11 +2462,30 @@
                 await fetch('/api/logout', { method: 'POST', credentials: 'include' });
                 currentUser = null;
                 followingUserIds = [];
+                blockedUserIds = [];
+                show18Plus = false;
+                localStorage.setItem('show18Plus', 'false');
                 updateUIState();
                 loadMessages();
             } catch (err) {
                 console.error('Logout error:', err);
             }
+        }
+
+        async function checkUserSession() {
+            try {
+                const res = await fetch('/api/me', { credentials: 'include' });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentUser = data.user;
+                    initSocketConnection();
+                } else {
+                    currentUser = null;
+                }
+            } catch (e) {
+                currentUser = null;
+            }
+            updateUIState();
         }
 
         function escapeHtml(str) {
