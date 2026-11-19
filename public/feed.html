@@ -784,14 +784,17 @@
                 }
             };
 
-            pc.onicecandidate = (event) => {
-                if (event.candidate && socket) {
-                    socket.emit('ice_candidate', {
-                        target_id: Number(remoteUserId),
-                        candidate: event.candidate
-                    });
-                }
-            };
+           pc.onicecandidate = (event) => {
+    if (event.candidate && socket) {
+        console.log('Sending ICE candidate to:', remoteUserId, event.candidate.type || event.candidate.candidate);
+        socket.emit('ice_candidate', {
+            target_id: Number(remoteUserId),
+            candidate: event.candidate
+        });
+    } else if (!event.candidate) {
+        console.log('Finished gathering local ICE candidates');
+    }
+};
 
             peerConnection = pc;
             return pc;
@@ -1321,18 +1324,20 @@
                     }
                 });
 
-                socket.on('ice_candidate', async (data) => {
-                    if (!data || !data.candidate) return;
-                    if (peerConnection && peerConnection.remoteDescription) {
-                        try {
-                            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                        } catch (e) {
-                            console.error('ICE candidate error:', e);
-                        }
-                    } else {
-                        iceCandidateQueue.push(data.candidate);
-                    }
-                });
+               socket.on('ice_candidate', async (data) => {
+    if (!data || !data.candidate) return;
+    console.log('Received ICE candidate from:', data.sender_id);
+    if (peerConnection && peerConnection.remoteDescription) {
+        try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            console.log('Added ICE candidate successfully');
+        } catch (e) {
+            console.error('ICE candidate error:', e);
+        }
+    } else {
+        iceCandidateQueue.push(data.candidate);
+    }
+});
 
                 socket.on('call_ended', () => {
                     cleanupVoiceCall();
