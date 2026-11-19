@@ -72,22 +72,69 @@ io.use((socket, next) => {
     }
 });
 
-const onlineUsers = new Map();
+const onlineUsers = new Map(); // userId -> Set of socketIds
 const watchRooms = new Map();
 
-const GACHA_REWARDS = [
-    { title: 'SSR Lucky Puller', badge: '👑' },
-    { title: 'Sakura Shrine Blessings', badge: '🌸' },
-    { title: 'Ramen Critic', badge: '🍜' },
-    { title: 'Critical Hit Striker', badge: '⚔️' },
-    { title: 'Midnight Otaku', badge: '👾' },
-    { title: 'Golden Ticket Holder', badge: '🎫' },
-    { title: 'Arcane Tactician', badge: '🔮' },
-    { title: 'Turbo Drift Racer', badge: '⚡' }
-];
+const BADGE_POOL = ['👑', '🌸', '🍜', '⚔️', '👾', '🎫', '🔮', '⚡', '🐉', '🌙', '🔥', '💎', '🎭', '⛩️', '🎧', '🌟'];
 
 function getTodayKey() {
     return new Date().toISOString().slice(0, 10);
+}
+
+function getOnlineUserIds() {
+    return Array.from(onlineUsers.keys()).map(Number);
+}
+
+function getFallbackGachaReward(todayKey, userId) {
+    const hash = Array.from(`${todayKey}-${userId}`).reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const prefixes = ['SSR', 'Mythic', 'Phantom', 'Celestial', 'Turbo', 'Shrine', 'Critical', 'Midnight'];
+    const roles = ['Wanderer', 'Duelist', 'Archivist', 'Chronicle Keeper', 'Vanguard', 'Alchemist', 'Striker', 'Collector'];
+    return {
+        title: `${prefixes[hash % prefixes.length]} ${roles[(hash >> 3) % roles.length]}`,
+        badge: BADGE_POOL[hash % BADGE_POOL.length]
+    };
+}
+
+async function fetchApiGachaReward(todayKey, userId) {
+    const seed = Array.from(`${todayKey}-${userId}`).reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const page = (seed % 40) + 1;
+    const index = seed % 25;
+
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+
+        const response = await fetch(`https://api.jikan.moe/v4/top/anime?page=${page}&limit=25`, {
+            signal: controller.signal
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+            return getFallbackGachaReward(todayKey, userId);
+        }
+
+        const payload = await response.json();
+        const animeList = Array.isArray(payload.data) ? payload.data : [];
+        if (animeList.length === 0) {
+            return getFallbackGachaReward(todayKey, userId);
+        }
+
+        const picked = animeList[index % animeList.length];
+        const rawTitle = (picked.title_english || picked.title || 'Anime Voyager').trim();
+        const shortTitle = rawTitle.length > 26 ? `${rawTitle.slice(0, 26).trim()}…` : rawTitle;
+        const primaryGenre = Array.isArray(picked.genres) && picked.genres[0]?.name
+            ? picked.genres[0].name
+            : 'Fan';
+        const badge = BADGE_POOL[seed % BADGE_POOL.length];
+
+        return {
+            title: `${shortTitle} ${primaryGenre}`.slice(0, 40),
+            badge
+        };
+    } catch (err) {
+        console.warn('Gacha API fallback triggered:', err.message);
+        return getFallbackGachaReward(todayKey, userId);
+    }
 }
 
 function getWatchRoomList() {
@@ -101,20 +148,91 @@ function getWatchRoomList() {
 
 io.on('connection', (socket) => {
     let sessionUser = (socket.request && socket.request.session) ? socket.request.session.user : null;
+    let boundUserId = null;
 
     const registerUserSocket = (userId) => {
         if (!userId) return;
-        const roomId = `user_${userId}`;
+        const numericId = Number(userId);
+        boundUserId = numericId;
+        const roomId = `user_${numericId}`;
         socket.join(roomId);
-        onlineUsers.set(Number(userId), socket.id);
+
+        const wasOffline = !onlineUsers.has(numericId) || onlineUsers.get(numericId).size === 0;
+        if (!onlineUsers.has(numericId)) {
+            onlineUsers.set(numericId, new Set());
+        }
+        onlineUsers.get(numericId).add(socket.id);
+
+        socket.emit('online_users_list', getOnlineUserIds());
+        if (wasOffline) {
+            io.emit('user_online', { user_id: numericId });
+        }
     };
 
-    if (sessionUser) {
+    if (sessionUser && sessionUser.id) {
         registerUserSocket(sessionUser.id);
+    } else {
+        socket.emit('online_users_list', getOnlineUserIds());
     }
 
     socket.on('identify_user', (userId) => {
         registerUserSocket(userId);
+    });
+
+    // --- WEBRTC VOICE CALL SIGNALING ---
+    socket.on('call_user', (data) => {
+        const callerId = sessionUser ? Number(sessionUser.id) : Number(data?.caller_id);
+        const targetId = Number(data?.target_id);
+        if (!callerId || !targetId) return;
+
+        io.to(`user_${targetId}`).emit('incoming_call', {
+            caller_id: callerId,
+            caller_username: sessionUser ? sessionUser.username : (data?.caller_username || 'User')
+        });
+    });
+
+    socket.on('call_offer', (data) => {
+        const callerId = sessionUser ? Number(sessionUser.id) : Number(data?.caller_id);
+        const targetId = Number(data?.target_id);
+        if (!callerId || !targetId || !data?.offer) return;
+
+        io.to(`user_${targetId}`).emit('call_offer', {
+            caller_id: callerId,
+            caller_username: sessionUser ? sessionUser.username : (data?.caller_username || 'User'),
+            offer: data.offer
+        });
+    });
+
+    socket.on('call_answer', (data) => {
+        const responderId = sessionUser ? Number(sessionUser.id) : Number(data?.responder_id);
+        const targetId = Number(data?.target_id);
+        if (!responderId || !targetId || !data?.answer) return;
+
+        io.to(`user_${targetId}`).emit('call_answer', {
+            responder_id: responderId,
+            answer: data.answer
+        });
+    });
+
+    socket.on('ice_candidate', (data) => {
+        const senderId = sessionUser ? Number(sessionUser.id) : Number(data?.sender_id);
+        const targetId = Number(data?.target_id);
+        if (!senderId || !targetId || !data?.candidate) return;
+
+        io.to(`user_${targetId}`).emit('ice_candidate', {
+            sender_id: senderId,
+            candidate: data.candidate
+        });
+    });
+
+    socket.on('end_call', (data) => {
+        const senderId = sessionUser ? Number(sessionUser.id) : Number(data?.sender_id);
+        const targetId = Number(data?.target_id);
+        if (!targetId) return;
+
+        io.to(`user_${targetId}`).emit('call_ended', {
+            sender_id: senderId
+        });
     });
 
     // --- LIVE TYPING INDICATORS ---
@@ -139,7 +257,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- DIRECT MESSAGES WITH BLOCK CHECK (SUPPORTS IMAGE, GIF, VIDEO, AUDIO) ---
+    // --- DIRECT MESSAGES WITH BLOCK CHECK ---
     socket.on('send_direct_message', async (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id, message, media_url, media_type, is_18plus } = data;
@@ -255,9 +373,16 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        if (sessionUser) {
-            onlineUsers.delete(Number(sessionUser.id));
+        const targetUid = boundUserId || (sessionUser ? Number(sessionUser.id) : null);
+        if (targetUid && onlineUsers.has(targetUid)) {
+            const set = onlineUsers.get(targetUid);
+            set.delete(socket.id);
+            if (set.size === 0) {
+                onlineUsers.delete(targetUid);
+                io.emit('user_offline', { user_id: targetUid });
+            }
         }
+
         let changed = false;
         for (const [roomId, room] of watchRooms.entries()) {
             if (room.users.has(socket.id)) {
@@ -320,6 +445,54 @@ function formatUserSessionObj(user) {
         device_id: user.device_id
     };
 }
+
+// --- PUBLIC USER PROFILE ENDPOINT ---
+app.get('/api/users/:id/profile', async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+        return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+
+    try {
+        const userRows = await db.query(
+            `SELECT id, username, avatar_style, avatar_seed, custom_avatar_url, title, badge,
+                    daily_gacha_date, daily_gacha_title, daily_gacha_badge, pinned_post_id
+             FROM users WHERE id = ?`,
+            [targetId]
+        );
+        const u = Array.isArray(userRows) ? userRows[0] : null;
+        if (!u) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        const followersRes = await db.query('SELECT COUNT(*) AS cnt FROM follows WHERE following_id = ?', [targetId]);
+        const followingRes = await db.query('SELECT COUNT(*) AS cnt FROM follows WHERE follower_id = ?', [targetId]);
+        const postsRows = await db.query(
+            'SELECT id, message, image_url, is_18plus, is_spoiler, created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 10',
+            [targetId]
+        );
+
+        const todayKey = getTodayKey();
+        const hasDaily = u.daily_gacha_date === todayKey && u.daily_gacha_title;
+
+        res.json({
+            id: Number(u.id),
+            username: u.username,
+            avatar_url: buildAvatarUrl(u.custom_avatar_url, u.avatar_style, u.avatar_seed || u.username),
+            title: hasDaily ? u.daily_gacha_title : (u.title || 'Novice Adventurer'),
+            badge: hasDaily ? u.daily_gacha_badge : (u.badge || '⭐'),
+            daily_gacha: hasDaily ? { title: u.daily_gacha_title, badge: u.daily_gacha_badge } : null,
+            pinned_post_id: u.pinned_post_id ? Number(u.pinned_post_id) : null,
+            followers_count: Number(followersRes?.[0]?.cnt || 0),
+            following_count: Number(followingRes?.[0]?.cnt || 0),
+            is_online: onlineUsers.has(targetId) && onlineUsers.get(targetId).size > 0,
+            recent_posts: Array.isArray(postsRows) ? postsRows : []
+        });
+    } catch (err) {
+        console.error('GET /api/users/:id/profile error:', err);
+        res.status(500).json({ error: 'Failed to load user profile.' });
+    }
+});
 
 async function attachPollsAndQuotesToPosts(posts, currentUserId) {
     if (!Array.isArray(posts) || posts.length === 0) return [];
@@ -408,6 +581,7 @@ async function attachPollsAndQuotesToPosts(posts, currentUserId) {
     return posts.map(r => {
         const todayKey = getTodayKey();
         const activeDaily = r.daily_gacha_date === todayKey && r.daily_gacha_title;
+        const uid = r.user_id ? Number(r.user_id) : null;
         return {
             ...r,
             avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.name),
@@ -415,6 +589,7 @@ async function attachPollsAndQuotesToPosts(posts, currentUserId) {
             badge: activeDaily ? r.daily_gacha_badge : (r.badge || '⭐'),
             is_spoiler: Boolean(r.is_spoiler),
             is_18plus: Boolean(r.is_18plus),
+            is_online: uid ? (onlineUsers.has(uid) && onlineUsers.get(uid).size > 0) : false,
             quoted_post: r.quoted_post_id ? (quotedMap.get(Number(r.quoted_post_id)) || null) : null,
             poll: pollMap.get(Number(r.id)) || null
         };
@@ -622,7 +797,7 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
-// --- DAILY GACHA / LUCK PULL ---
+// --- DAILY GACHA / LUCK PULL (API-DRIVEN) ---
 app.post('/api/daily-gacha', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to pull daily gacha.' });
@@ -642,7 +817,7 @@ app.post('/api/daily-gacha', async (req, res) => {
             });
         }
 
-        const reward = GACHA_REWARDS[Math.floor(Math.random() * GACHA_REWARDS.length)];
+        const reward = await fetchApiGachaReward(todayKey, userId);
 
         await db.query(
             'UPDATE users SET daily_gacha_date = ?, daily_gacha_title = ?, daily_gacha_badge = ? WHERE id = ?',
