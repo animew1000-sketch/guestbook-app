@@ -72,7 +72,7 @@ io.use((socket, next) => {
     }
 });
 
-const onlineUsers = new Map(); // userId -> Set of socketIds
+const onlineUsers = new Map();
 const watchRooms = new Map();
 
 const BADGE_POOL = ['👑', '🌸', '🍜', '⚔️', '👾', '🎫', '🔮', '⚡', '🐉', '🌙', '🔥', '💎', '🎭', '⛩️', '🎧', '🌟'];
@@ -446,7 +446,6 @@ function formatUserSessionObj(user) {
     };
 }
 
-// --- PUBLIC USER PROFILE ENDPOINT ---
 app.get('/api/users/:id/profile', async (req, res) => {
     const targetId = Number(req.params.id);
     if (!Number.isInteger(targetId) || targetId <= 0) {
@@ -623,8 +622,6 @@ function applyTextFilters(text) {
     return { sanitizedText, autoSpoiler, isCensored };
 }
 
-// --- AUTH & DEVICE LIMITS ---
-
 app.post('/api/register', async (req, res) => {
     const { username, email, password, device_id } = req.body;
     if (!username || !email || !password) {
@@ -797,7 +794,6 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
-// --- DAILY GACHA / LUCK PULL (API-DRIVEN) ---
 app.post('/api/daily-gacha', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to pull daily gacha.' });
@@ -843,7 +839,6 @@ app.post('/api/daily-gacha', async (req, res) => {
     }
 });
 
-// --- PROFILE UPDATE ---
 app.post('/api/avatar', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to update profile.' });
@@ -928,8 +923,6 @@ app.post('/api/verify-birthdate', async (req, res) => {
     }
 });
 
-// --- FOLLOW / UNFOLLOW SYSTEM ---
-
 app.get('/api/following', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.json([]);
@@ -991,8 +984,6 @@ app.post('/api/follow/:target_id', async (req, res) => {
         res.status(500).json({ error: `Failed to update follow status: ${err.message}` });
     }
 });
-
-// --- PINNED POST & SAVED BOOKMARKS ---
 
 app.post('/api/pin/:post_id', async (req, res) => {
     if (!req.session || !req.session.user) {
@@ -1063,8 +1054,6 @@ app.post('/api/save/:post_id', async (req, res) => {
     }
 });
 
-// --- POLL VOTING ---
-
 app.post('/api/polls/:poll_id/vote', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to vote in polls.' });
@@ -1123,8 +1112,6 @@ app.post('/api/polls/:poll_id/vote', async (req, res) => {
         res.status(500).json({ error: 'Failed to record poll vote.' });
     }
 });
-
-// --- REPORTING & BLOCKING SYSTEM ---
 
 app.post('/api/reports', async (req, res) => {
     if (!req.session || !req.session.user) {
@@ -1215,8 +1202,6 @@ app.get('/api/blocks', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch block list.' });
     }
 });
-
-// --- MESSAGES & POST CREATION ---
 
 app.get('/api/messages', async (req, res) => {
     const feedType = req.query.feed || 'public';

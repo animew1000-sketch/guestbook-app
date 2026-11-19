@@ -597,6 +597,7 @@
         let peerConnection = null;
         let localAudioStream = null;
         let pendingIncomingCall = null;
+        let iceCandidateQueue = [];
         let isCallMuted = false;
 
         const RTC_CONFIG = {
@@ -654,7 +655,6 @@
             if (savedBtn) savedBtn.classList.toggle('active', currentFeedTab === 'saved');
         }
 
-        // --- ONLINE STATUS SYNC ---
         function refreshOnlineIndicators() {
             const headerDot = document.getElementById('header-online-dot');
             if (headerDot) {
@@ -673,7 +673,6 @@
             });
         }
 
-        // --- USER PROFILE MODAL ---
         async function openUserProfileModal(userId) {
             const numericId = Number(userId);
             if (!numericId) return;
@@ -730,21 +729,58 @@
             document.getElementById('user-profile-modal').classList.add('hidden');
         }
 
-        // --- WEBRTC VOICE CALLS ---
+        async function flushIceCandidateQueue() {
+            if (!peerConnection || !peerConnection.remoteDescription) return;
+            while (iceCandidateQueue.length > 0) {
+                const candidate = iceCandidateQueue.shift();
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (e) {
+                    console.error('Queued ICE candidate error:', e);
+                }
+            }
+        }
+
         function createPeerConnection(remoteUserId) {
             if (peerConnection) {
                 peerConnection.close();
             }
+            iceCandidateQueue = [];
             const pc = new RTCPeerConnection(RTC_CONFIG);
 
             if (localAudioStream) {
-                localAudioStream.getTracks().forEach(track => pc.addTrack(track, localAudioStream));
+                localAudioStream.getTracks().forEach(track => {
+                    track.enabled = true;
+                    pc.addTrack(track, localAudioStream);
+                });
             }
 
             pc.ontrack = (event) => {
                 const remoteAudio = document.getElementById('remote-voice-audio');
-                if (remoteAudio && event.streams[0]) {
+                if (!remoteAudio) return;
+
+                if (event.streams && event.streams[0]) {
                     remoteAudio.srcObject = event.streams[0];
+                } else {
+                    const inboundStream = new MediaStream([event.track]);
+                    remoteAudio.srcObject = inboundStream;
+                }
+
+                remoteAudio.autoplay = true;
+                remoteAudio.muted = false;
+                remoteAudio.volume = 1.0;
+                remoteAudio.play().catch(err => console.warn('Remote audio play retry:', err));
+            };
+
+            pc.oniceconnectionstatechange = () => {
+                console.log('ICE connection state:', pc.iceConnectionState);
+                if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                    const remoteAudio = document.getElementById('remote-voice-audio');
+                    if (remoteAudio && remoteAudio.srcObject) {
+                        remoteAudio.muted = false;
+                        remoteAudio.volume = 1.0;
+                        remoteAudio.play().catch(() => {});
+                    }
                 }
             };
 
@@ -773,7 +809,16 @@
 
             try {
                 initSocketConnection();
-                localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const remoteAudio = document.getElementById('remote-voice-audio');
+                if (remoteAudio) {
+                    remoteAudio.muted = false;
+                    remoteAudio.volume = 1.0;
+                    remoteAudio.play().catch(() => {});
+                }
+
+                localAudioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                });
                 const pc = createPeerConnection(currentActiveDmUserId);
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
@@ -798,14 +843,26 @@
             pendingIncomingCall = null;
 
             try {
+                const remoteAudio = document.getElementById('remote-voice-audio');
+                if (remoteAudio) {
+                    remoteAudio.muted = false;
+                    remoteAudio.volume = 1.0;
+                    remoteAudio.play().catch(() => {});
+                }
+
                 currentActiveDmUserId = Number(callData.caller_id);
                 currentActiveDmUsername = callData.caller_username;
                 document.getElementById('dm-recipient-title').innerText = `@${callData.caller_username}`;
                 document.getElementById('dm-modal').classList.remove('hidden');
+                refreshOnlineIndicators();
 
-                localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                localAudioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                });
                 const pc = createPeerConnection(currentActiveDmUserId);
                 await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
+                await flushIceCandidateQueue();
+
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
 
@@ -850,8 +907,12 @@
                 localAudioStream = null;
             }
             const remoteAudio = document.getElementById('remote-voice-audio');
-            if (remoteAudio) remoteAudio.srcObject = null;
+            if (remoteAudio) {
+                remoteAudio.pause();
+                remoteAudio.srcObject = null;
+            }
 
+            iceCandidateQueue = [];
             pendingIncomingCall = null;
             isCallMuted = false;
             const muteBtn = document.getElementById('voice-mute-btn');
@@ -861,7 +922,6 @@
             document.getElementById('voice-call-bar').classList.add('hidden');
         }
 
-        // --- DAILY GACHA ---
         async function pullDailyGacha() {
             if (!currentUser) return;
             const gachaBtn = document.getElementById('gacha-btn');
@@ -891,7 +951,6 @@
             }
         }
 
-        // --- POLL CREATOR & QUOTE COMPOSER ---
         function togglePollCreator() {
             document.getElementById('poll-creator-box').classList.toggle('hidden');
         }
@@ -912,7 +971,6 @@
             document.getElementById('quote-composer-banner').classList.add('hidden');
         }
 
-        // --- VOICE CLIPS IN DMs ---
         async function toggleVoiceRecording() {
             const btn = document.getElementById('dm-voice-btn');
             if (!isRecordingAudio) {
@@ -952,7 +1010,6 @@
             }
         }
 
-        // --- LIVE WATCH & REACTION ROOMS ---
         function openWatchRoomsModal() {
             initSocketConnection();
             socket.emit('get_watch_rooms');
@@ -1009,7 +1066,6 @@
             box.scrollTop = box.scrollHeight;
         }
 
-        // --- DEVICE LIMIT CHECK ---
         async function checkDeviceAccounts() {
             const deviceId = getOrCreateDeviceId();
             try {
@@ -1140,8 +1196,6 @@
             });
         }
 
-        // --- CLIENT-SIDE NSFW CLASSIFIER ---
-
         async function scanNsfwOnClient(base64Img) {
             if (!base64Img) return false;
 
@@ -1209,8 +1263,6 @@
             }
         }
 
-        // --- SOCKET CONNECTION, ONLINE STATUS, VOICE CALLS & TYPING ---
-
         function initSocketConnection() {
             if (!socket) {
                 socket = io();
@@ -1244,26 +1296,41 @@
                 socket.on('call_offer', async (data) => {
                     if (!data || !data.offer) return;
                     pendingIncomingCall = data;
+                    currentActiveDmUserId = Number(data.caller_id);
+                    currentActiveDmUsername = data.caller_username || 'User';
+                    document.getElementById('dm-recipient-title').innerText = `@${currentActiveDmUsername}`;
+                    document.getElementById('dm-modal').classList.remove('hidden');
                     document.getElementById('voice-call-bar').classList.remove('hidden');
                     document.getElementById('voice-answer-btn').classList.remove('hidden');
                     document.getElementById('voice-mute-btn').classList.add('hidden');
-                    document.getElementById('voice-call-status').textContent = `Incoming call from @${data.caller_username || 'User'}`;
+                    document.getElementById('voice-call-status').textContent = `Incoming call from @${currentActiveDmUsername}`;
+                    refreshOnlineIndicators();
                 });
 
                 socket.on('call_answer', async (data) => {
                     if (peerConnection && data && data.answer) {
                         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        await flushIceCandidateQueue();
                         document.getElementById('voice-call-status').textContent = `Connected with @${currentActiveDmUsername || 'User'}`;
+                        const remoteAudio = document.getElementById('remote-voice-audio');
+                        if (remoteAudio && remoteAudio.srcObject) {
+                            remoteAudio.muted = false;
+                            remoteAudio.volume = 1.0;
+                            remoteAudio.play().catch(() => {});
+                        }
                     }
                 });
 
                 socket.on('ice_candidate', async (data) => {
-                    if (peerConnection && data && data.candidate) {
+                    if (!data || !data.candidate) return;
+                    if (peerConnection && peerConnection.remoteDescription) {
                         try {
                             await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
                         } catch (e) {
                             console.error('ICE candidate error:', e);
                         }
+                    } else {
+                        iceCandidateQueue.push(data.candidate);
                     }
                 });
 
@@ -1656,8 +1723,6 @@
             }
         }
 
-        // --- REPORTING & BLOCK / UNBLOCK MODAL LOGIC ---
-
         function openReportModal(postId) {
             if (!currentUser) {
                 window.location.href = 'auth.html';
@@ -1800,8 +1865,6 @@
             });
         }
 
-        // --- AVATAR & PROFILE BADGES MODAL LOGIC ---
-
         function openAvatarModal() {
             if (!currentUser) return;
             document.getElementById('avatar-style-select').value = currentUser.avatar_style || 'bottts';
@@ -1886,8 +1949,6 @@
                 console.error('Save profile error:', err);
             }
         }
-
-        // --- MEME STUDIO LOGIC ---
 
         function handleImageSelect(event) {
             const file = event.target.files[0];
@@ -1988,8 +2049,6 @@
             alert('Image edits applied successfully!');
             closeMemeStudio();
         }
-
-        // --- FEED RENDERER ---
 
         function updateNsfwBadge() {
             const badge = document.getElementById('nsfw-status-badge');
@@ -2542,8 +2601,6 @@
                 console.error('Delete error:', err);
             }
         }
-
-        // --- SUBMIT POST HANDLER ---
 
         async function handlePostSubmit(event) {
             event.preventDefault();
