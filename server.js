@@ -38,7 +38,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// Serve custom favicon.svg if present, otherwise serve a built-in SVG icon for every page
 app.get(['/favicon.svg', '/favicon.ico'], (req, res) => {
     const customFavicon = path.join(__dirname, 'public', 'favicon.svg');
     if (fs.existsSync(customFavicon)) {
@@ -179,7 +178,6 @@ io.on('connection', (socket) => {
         registerUserSocket(userId);
     });
 
-    // --- WEBRTC VOICE CALL SIGNALING ---
     socket.on('call_user', (data) => {
         const callerId = sessionUser ? Number(sessionUser.id) : Number(data?.caller_id);
         const targetId = Number(data?.target_id);
@@ -235,7 +233,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- LIVE TYPING INDICATORS ---
     socket.on('typing_start', (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id } = data;
@@ -257,7 +254,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- DIRECT MESSAGES WITH BLOCK CHECK ---
     socket.on('send_direct_message', async (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id, message, media_url, media_type, is_18plus } = data;
@@ -304,7 +300,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- LIVE REACTION / WATCH ROOMS ---
     socket.on('get_watch_rooms', () => {
         socket.emit('watch_rooms_list', getWatchRoomList());
     });

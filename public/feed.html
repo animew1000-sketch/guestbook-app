@@ -596,12 +596,17 @@
         // WebRTC Voice Call State
         let peerConnection = null;
         let localAudioStream = null;
+        let remoteMediaStream = null;
         let pendingIncomingCall = null;
         let iceCandidateQueue = [];
         let isCallMuted = false;
 
+        // Add TURN credentials here if calling across cellular / strict NAT networks
         const RTC_CONFIG = {
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
         };
 
         const GIPHY_API_KEY = 'YOUR_GIPHY_API_KEY';
@@ -621,6 +626,16 @@
                 localStorage.setItem('anime_social_device_id', deviceId);
             }
             return deviceId;
+        }
+
+        async function safeJsonFetch(url, options = {}) {
+            const res = await fetch(url, { credentials: 'include', ...options });
+            const contentType = res.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                return { ok: false, status: res.status, data: null };
+            }
+            const data = await res.json();
+            return { ok: res.ok, status: res.status, data };
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
@@ -678,10 +693,9 @@
             if (!numericId) return;
 
             try {
-                const res = await fetch(`/api/users/${numericId}/profile`, { credentials: 'include' });
-                const data = await res.json();
-                if (!res.ok) {
-                    alert(data.error || 'Could not load profile.');
+                const { ok, data } = await safeJsonFetch(`/api/users/${numericId}/profile`);
+                if (!ok || !data) {
+                    alert(data?.error || 'Could not load profile.');
                     return;
                 }
 
@@ -729,6 +743,7 @@
             document.getElementById('user-profile-modal').classList.add('hidden');
         }
 
+        // --- WEBRTC VOICE CALLS (COMPLETE AUDIO ATTACHMENT & PLAYBACK FIX) ---
         async function flushIceCandidateQueue() {
             if (!peerConnection || !peerConnection.remoteDescription) return;
             while (iceCandidateQueue.length > 0) {
@@ -741,60 +756,93 @@
             }
         }
 
+        function attachAndPlayRemoteStream(stream) {
+            const remoteAudio = document.getElementById('remote-voice-audio');
+            if (!remoteAudio || !stream) return;
+
+            remoteMediaStream = stream;
+            if (remoteAudio.srcObject !== stream) {
+                remoteAudio.srcObject = stream;
+            }
+            remoteAudio.autoplay = true;
+            remoteAudio.muted = false;
+            remoteAudio.volume = 1.0;
+
+            const playPromise = remoteAudio.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch(() => {
+                    const resumeOnClick = () => {
+                        remoteAudio.muted = false;
+                        remoteAudio.volume = 1.0;
+                        remoteAudio.play().catch(() => {});
+                        document.removeEventListener('click', resumeOnClick);
+                    };
+                    document.addEventListener('click', resumeOnClick, { once: true });
+                });
+            }
+        }
+
         function createPeerConnection(remoteUserId) {
             if (peerConnection) {
                 peerConnection.close();
             }
             iceCandidateQueue = [];
+            remoteMediaStream = new MediaStream();
+
             const pc = new RTCPeerConnection(RTC_CONFIG);
 
+            if (typeof pc.addTransceiver === 'function') {
+                pc.addTransceiver('audio', { direction: 'sendrecv' });
+            }
+
             if (localAudioStream) {
-                localAudioStream.getTracks().forEach(track => {
+                localAudioStream.getAudioTracks().forEach(track => {
                     track.enabled = true;
                     pc.addTrack(track, localAudioStream);
                 });
             }
 
             pc.ontrack = (event) => {
-                const remoteAudio = document.getElementById('remote-voice-audio');
-                if (!remoteAudio) return;
-
                 if (event.streams && event.streams[0]) {
-                    remoteAudio.srcObject = event.streams[0];
-                } else {
-                    const inboundStream = new MediaStream([event.track]);
-                    remoteAudio.srcObject = inboundStream;
+                    attachAndPlayRemoteStream(event.streams[0]);
+                } else if (event.track) {
+                    remoteMediaStream.addTrack(event.track);
+                    attachAndPlayRemoteStream(remoteMediaStream);
                 }
-
-                remoteAudio.autoplay = true;
-                remoteAudio.muted = false;
-                remoteAudio.volume = 1.0;
-                remoteAudio.play().catch(err => console.warn('Remote audio play retry:', err));
             };
 
-            pc.oniceconnectionstatechange = () => {
-                console.log('ICE connection state:', pc.iceConnectionState);
-                if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            const handleStateUpdate = () => {
+                const state = pc.iceConnectionState || pc.connectionState;
+                if (state === 'connected' || state === 'completed') {
+                    const statusEl = document.getElementById('voice-call-status');
+                    if (statusEl) {
+                        statusEl.textContent = `Connected with @${currentActiveDmUsername || 'User'}`;
+                    }
                     const remoteAudio = document.getElementById('remote-voice-audio');
                     if (remoteAudio && remoteAudio.srcObject) {
                         remoteAudio.muted = false;
                         remoteAudio.volume = 1.0;
                         remoteAudio.play().catch(() => {});
                     }
+                } else if (state === 'failed') {
+                    const statusEl = document.getElementById('voice-call-status');
+                    if (statusEl) {
+                        statusEl.textContent = 'Connection blocked by network/firewall';
+                    }
                 }
             };
 
-           pc.onicecandidate = (event) => {
-    if (event.candidate && socket) {
-        console.log('Sending ICE candidate to:', remoteUserId, event.candidate.type || event.candidate.candidate);
-        socket.emit('ice_candidate', {
-            target_id: Number(remoteUserId),
-            candidate: event.candidate
-        });
-    } else if (!event.candidate) {
-        console.log('Finished gathering local ICE candidates');
-    }
-};
+            pc.oniceconnectionstatechange = handleStateUpdate;
+            pc.onconnectionstatechange = handleStateUpdate;
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate && socket) {
+                    socket.emit('ice_candidate', {
+                        target_id: Number(remoteUserId),
+                        candidate: event.candidate
+                    });
+                }
+            };
 
             peerConnection = pc;
             return pc;
@@ -823,7 +871,7 @@
                     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
                 });
                 const pc = createPeerConnection(currentActiveDmUserId);
-                const offer = await pc.createOffer();
+                const offer = await pc.createOffer({ offerToReceiveAudio: true });
                 await pc.setLocalDescription(offer);
 
                 socket.emit('call_offer', {
@@ -909,6 +957,7 @@
                 localAudioStream.getTracks().forEach(t => t.stop());
                 localAudioStream = null;
             }
+            remoteMediaStream = null;
             const remoteAudio = document.getElementById('remote-voice-audio');
             if (remoteAudio) {
                 remoteAudio.pause();
@@ -934,18 +983,14 @@
             }
 
             try {
-                const res = await fetch('/api/daily-gacha', {
-                    method: 'POST',
-                    credentials: 'include'
-                });
-                const data = await res.json();
-                if (res.ok) {
+                const { ok, data } = await safeJsonFetch('/api/daily-gacha', { method: 'POST' });
+                if (ok && data) {
                     currentUser = data.user;
                     updateUIState();
                     alert(`${data.message} Equipped for today!`);
                     loadMessages();
                 } else {
-                    alert(data.error || 'Daily gacha unavailable.');
+                    alert(data?.error || 'Daily gacha unavailable.');
                     updateUIState();
                 }
             } catch (err) {
@@ -1072,9 +1117,8 @@
         async function checkDeviceAccounts() {
             const deviceId = getOrCreateDeviceId();
             try {
-                const res = await fetch(`/api/device-accounts?device_id=${encodeURIComponent(deviceId)}`);
-                if (!res.ok) return;
-                const data = await res.json();
+                const { ok, data } = await safeJsonFetch(`/api/device-accounts?device_id=${encodeURIComponent(deviceId)}`);
+                if (!ok || !data) return;
                 if (Array.isArray(data.accounts) && data.accounts.length > 2) {
                     displayDeviceLimitModal(data.accounts);
                 } else {
@@ -1151,7 +1195,7 @@
             }
 
             try {
-                const res = await fetch('/api/delete-device-account', {
+                const { ok, data } = await safeJsonFetch('/api/delete-device-account', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1161,9 +1205,7 @@
                     })
                 });
 
-                const data = await res.json();
-
-                if (res.ok) {
+                if (ok && data) {
                     alert(data.message);
                     cancelAccountDeletion();
 
@@ -1174,7 +1216,7 @@
                         displayDeviceLimitModal(data.accounts);
                     }
                 } else {
-                    alert(data.error || 'Failed to delete account.');
+                    alert(data?.error || 'Failed to delete account.');
                 }
             } catch (err) {
                 alert('Connection error deleting account.');
@@ -1324,20 +1366,18 @@
                     }
                 });
 
-               socket.on('ice_candidate', async (data) => {
-    if (!data || !data.candidate) return;
-    console.log('Received ICE candidate from:', data.sender_id);
-    if (peerConnection && peerConnection.remoteDescription) {
-        try {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-            console.log('Added ICE candidate successfully');
-        } catch (e) {
-            console.error('ICE candidate error:', e);
-        }
-    } else {
-        iceCandidateQueue.push(data.candidate);
-    }
-});
+                socket.on('ice_candidate', async (data) => {
+                    if (!data || !data.candidate) return;
+                    if (peerConnection && peerConnection.remoteDescription) {
+                        try {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        } catch (e) {
+                            console.error('ICE candidate error:', e);
+                        }
+                    } else {
+                        iceCandidateQueue.push(data.candidate);
+                    }
+                });
 
                 socket.on('call_ended', () => {
                     cleanupVoiceCall();
@@ -1566,12 +1606,11 @@
 
             initSocketConnection();
 
-            const res = await fetch(`/api/dms/${encodeURIComponent(targetUserId)}`, { credentials: 'include' });
-            if (res.ok) {
-                const history = await res.json();
+            const { ok, data } = await safeJsonFetch(`/api/dms/${encodeURIComponent(targetUserId)}`);
+            if (ok && Array.isArray(data)) {
                 const historyBox = document.getElementById('dm-chat-history');
                 historyBox.innerHTML = '';
-                history.forEach(msg => appendDmToChat(msg));
+                data.forEach(msg => appendDmToChat(msg));
             }
         }
 
@@ -1753,19 +1792,17 @@
             }
 
             try {
-                const res = await fetch('/api/reports', {
+                const { ok, data } = await safeJsonFetch('/api/reports', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({ post_id: reportingPostId, reason })
                 });
 
-                const data = await res.json();
-                if (res.ok) {
+                if (ok && data) {
                     alert(data.message);
                     closeReportModal();
                 } else {
-                    alert(data.error || 'Failed to submit report.');
+                    alert(data?.error || 'Failed to submit report.');
                 }
             } catch (err) {
                 alert('Error submitting report.');
@@ -1779,18 +1816,16 @@
             }
 
             try {
-                const res = await fetch(`/api/block/${encodeURIComponent(targetUserId)}`, {
-                    method: 'POST',
-                    credentials: 'include'
+                const { ok, data } = await safeJsonFetch(`/api/block/${encodeURIComponent(targetUserId)}`, {
+                    method: 'POST'
                 });
-                const data = await res.json();
 
-                if (res.ok) {
+                if (ok && data) {
                     alert(data.message);
                     await fetchBlockList();
                     loadMessages();
                 } else {
-                    alert(data.error || 'Failed to update block state.');
+                    alert(data?.error || 'Failed to update block state.');
                 }
             } catch (err) {
                 alert('Error processing block request.');
@@ -1801,19 +1836,17 @@
             if (!currentUser) return;
 
             try {
-                const res = await fetch(`/api/unblock/${encodeURIComponent(targetUserId)}`, {
-                    method: 'POST',
-                    credentials: 'include'
+                const { ok, data } = await safeJsonFetch(`/api/unblock/${encodeURIComponent(targetUserId)}`, {
+                    method: 'POST'
                 });
-                const data = await res.json();
 
-                if (res.ok) {
+                if (ok && data) {
                     alert(data.message);
                     await fetchBlockList();
                     renderBlockedUsersModal();
                     loadMessages();
                 } else {
-                    alert(data.error || 'Failed to unblock user.');
+                    alert(data?.error || 'Failed to unblock user.');
                 }
             } catch (err) {
                 alert('Error unblocking user.');
@@ -1827,9 +1860,9 @@
                 return;
             }
             try {
-                const res = await fetch('/api/blocks', { credentials: 'include' });
-                if (res.ok) {
-                    blockedUsersList = await res.json();
+                const { ok, data } = await safeJsonFetch('/api/blocks');
+                if (ok && Array.isArray(data)) {
+                    blockedUsersList = data;
                     blockedUserIds = blockedUsersList.map(u => Number(u.id));
                 }
             } catch (e) {
@@ -1928,10 +1961,9 @@
             const customTitle = document.getElementById('profile-title-input').value;
 
             try {
-                const res = await fetch('/api/avatar', {
+                const { ok, data } = await safeJsonFetch('/api/avatar', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({
                         avatar_style: style,
                         avatar_seed: seed,
@@ -1940,15 +1972,14 @@
                         badge: selectedBadgeEmoji
                     })
                 });
-                const data = await res.json();
 
-                if (res.ok) {
+                if (ok && data) {
                     currentUser = data.user || currentUser;
                     updateUIState();
                     closeAvatarModal();
                     loadMessages();
                 } else {
-                    alert(data.error || 'Failed to save profile.');
+                    alert(data?.error || 'Failed to save profile.');
                 }
             } catch (err) {
                 console.error('Save profile error:', err);
@@ -2122,15 +2153,13 @@
             if (!birthdateValue) return;
 
             try {
-                const res = await fetch('/api/verify-birthdate', {
+                const { ok, data } = await safeJsonFetch('/api/verify-birthdate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({ birthdate: birthdateValue })
                 });
-                const data = await res.json();
 
-                if (res.ok) {
+                if (ok && data) {
                     currentUser.birthdate = birthdateValue;
                     currentUser.is_minor = data.is_minor;
                     currentUser.age_verified = data.age_verified;
@@ -2149,7 +2178,7 @@
                     updateNsfwBadge();
                     loadMessages();
                 } else {
-                    alert(data.error || 'Verification failed.');
+                    alert(data?.error || 'Verification failed.');
                 }
             } catch (err) {
                 console.error('Birthdate verification error:', err);
@@ -2226,10 +2255,9 @@
                 return;
             }
             try {
-                const res = await fetch('/api/following', { credentials: 'include' });
-                if (res.ok) {
-                    const ids = await res.json();
-                    followingUserIds = Array.isArray(ids) ? ids.map(Number) : [];
+                const { ok, data } = await safeJsonFetch('/api/following');
+                if (ok && Array.isArray(data)) {
+                    followingUserIds = data.map(Number);
                 }
             } catch (e) {
                 followingUserIds = [];
@@ -2242,10 +2270,9 @@
                 return;
             }
             try {
-                const res = await fetch('/api/saved-posts', { credentials: 'include' });
-                if (res.ok) {
-                    const ids = await res.json();
-                    savedPostIds = Array.isArray(ids) ? ids.map(Number) : [];
+                const { ok, data } = await safeJsonFetch('/api/saved-posts');
+                if (ok && Array.isArray(data)) {
+                    savedPostIds = data.map(Number);
                 }
             } catch (e) {
                 savedPostIds = [];
@@ -2272,17 +2299,15 @@
                 return;
             }
             try {
-                const res = await fetch(`/api/polls/${encodeURIComponent(pollId)}/vote`, {
+                const { ok, data } = await safeJsonFetch(`/api/polls/${encodeURIComponent(pollId)}/vote`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({ option_id: Number(optionId) })
                 });
-                const data = await res.json();
-                if (res.ok) {
+                if (ok) {
                     loadMessages();
                 } else {
-                    alert(data.error || 'Failed to vote.');
+                    alert(data?.error || 'Failed to vote.');
                 }
             } catch (err) {
                 alert('Error voting in poll.');
@@ -2292,17 +2317,15 @@
         async function togglePinPost(postId) {
             if (!currentUser) return;
             try {
-                const res = await fetch(`/api/pin/${encodeURIComponent(postId)}`, {
-                    method: 'POST',
-                    credentials: 'include'
+                const { ok, data } = await safeJsonFetch(`/api/pin/${encodeURIComponent(postId)}`, {
+                    method: 'POST'
                 });
-                const data = await res.json();
-                if (res.ok) {
+                if (ok && data) {
                     currentUser.pinned_post_id = data.pinned_post_id;
                     alert(data.message);
                     loadMessages();
                 } else {
-                    alert(data.error || 'Failed to pin post.');
+                    alert(data?.error || 'Failed to pin post.');
                 }
             } catch (err) {
                 alert('Error pinning post.');
@@ -2316,12 +2339,10 @@
             }
             const numericPostId = Number(postId);
             try {
-                const res = await fetch(`/api/save/${numericPostId}`, {
-                    method: 'POST',
-                    credentials: 'include'
+                const { ok, data } = await safeJsonFetch(`/api/save/${numericPostId}`, {
+                    method: 'POST'
                 });
-                const data = await res.json();
-                if (res.ok) {
+                if (ok && data) {
                     if (data.saved) {
                         if (!savedPostIds.includes(numericPostId)) savedPostIds.push(numericPostId);
                     } else {
@@ -2329,7 +2350,7 @@
                     }
                     loadMessages();
                 } else {
-                    alert(data.error || 'Failed to save post.');
+                    alert(data?.error || 'Failed to save post.');
                 }
             } catch (err) {
                 alert('Error saving post.');
@@ -2527,15 +2548,18 @@
             if (!messagesContainer) return;
 
             try {
-                const response = await fetch(
-                    `/api/messages?feed=${encodeURIComponent(currentFeedTab)}&show18plus=${encodeURIComponent(show18Plus)}`,
-                    { credentials: 'include' }
+                const { ok, data: messages } = await safeJsonFetch(
+                    `/api/messages?feed=${encodeURIComponent(currentFeedTab)}&show18plus=${encodeURIComponent(show18Plus)}`
                 );
-                const messages = await response.json();
 
                 messagesContainer.innerHTML = '';
 
-                if (!Array.isArray(messages) || messages.length === 0) {
+                if (!ok || !Array.isArray(messages)) {
+                    messagesContainer.innerHTML = `<p class="error-msg">Failed to load posts from database.</p>`;
+                    return;
+                }
+
+                if (messages.length === 0) {
                     messagesContainer.innerHTML = `<p class="empty-msg">No posts in ${currentFeedTab} feed yet.</p>`;
                     return;
                 }
@@ -2560,14 +2584,12 @@
             }
 
             try {
-                const res = await fetch(`/api/follow/${numericTargetId}`, {
+                const { ok, status, data } = await safeJsonFetch(`/api/follow/${numericTargetId}`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include'
+                    headers: { 'Content-Type': 'application/json' }
                 });
-                const data = await res.json();
 
-                if (res.ok) {
+                if (ok && data) {
                     const isNowFollowing = Boolean(data.following);
 
                     if (isNowFollowing) {
@@ -2586,7 +2608,7 @@
                     await fetchFollowingList();
                     await loadMessages();
                 } else {
-                    alert(data.error || `Failed to update follow status (HTTP ${res.status}).`);
+                    alert(data?.error || `Failed to update follow status (HTTP ${status}).`);
                 }
             } catch (err) {
                 console.error('Follow error:', err);
@@ -2677,10 +2699,9 @@
             submitBtn.innerText = 'Posting...';
 
             try {
-                const response = await fetch('/api/messages', {
+                const { ok, data } = await safeJsonFetch('/api/messages', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({
                         message: contentInput,
                         image_url: base64Image,
@@ -2691,7 +2712,7 @@
                     })
                 });
 
-                if (response.ok) {
+                if (ok) {
                     document.getElementById('post-content').value = '';
                     document.getElementById('post-image').value = '';
                     document.getElementById('post-is-18plus').checked = false;
@@ -2707,8 +2728,7 @@
                     selectedOriginalImage = null;
                     editedBase64Image = null;
                 } else {
-                    const data = await response.json();
-                    alert(data.error || 'Failed to submit post.');
+                    alert(data?.error || 'Failed to submit post.');
                 }
             } catch (err) {
                 alert('Network connection error.');
@@ -2785,9 +2805,8 @@
 
         async function checkUserSession() {
             try {
-                const res = await fetch('/api/me', { credentials: 'include' });
-                if (res.ok) {
-                    const data = await res.json();
+                const { ok, data } = await safeJsonFetch('/api/me');
+                if (ok && data?.user) {
                     currentUser = data.user;
                     initSocketConnection();
                 } else {
