@@ -313,7 +313,7 @@
         </div>
     </div>
 
-    <!-- Mandatory Account Deletion Modal -->
+    <!-- Mandatory Account Deletion Modal (Safe: Only shown when > 2 accounts exist) -->
     <div id="device-limit-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.95); display: flex; justify-content: center; align-items: center; z-index: 5000; padding: 20px;">
         <div style="background: #1e293b; border: 2px solid #ef4444; padding: 24px; border-radius: 12px; max-width: 480px; width: 100%; text-align: center;">
             <h2 style="color: #ef4444; margin-top: 0; margin-bottom: 8px;">⚠️ Device Limit Exceeded</h2>
@@ -327,8 +327,8 @@
                 <p id="delete-confirm-label" style="color: #f87171; font-size: 0.8rem; margin: 0 0 8px 0; font-weight: 600;">Confirm Account Deletion</p>
                 <input type="password" id="delete-account-password" placeholder="Enter account password to confirm..." style="width: 100%; padding: 8px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; font-size: 0.85rem; margin-bottom: 8px;">
                 <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                    <button onclick="confirmAccountDeletion()" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Confirm Permanent Delete</button>
-                    <button onclick="cancelAccountDeletion()" style="padding: 6px 12px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Cancel</button>
+                    <button type="button" onclick="confirmAccountDeletion()" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Confirm Permanent Delete</button>
+                    <button type="button" onclick="cancelAccountDeletion()" style="padding: 6px 12px; background: #475569; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Cancel</button>
                 </div>
             </div>
         </div>
@@ -703,11 +703,13 @@
             const deviceId = getOrCreateDeviceId();
             try {
                 const res = await fetch(`/api/device-accounts?device_id=${encodeURIComponent(deviceId)}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.count > 2) {
-                        displayDeviceLimitModal(data.accounts);
-                    }
+                if (!res.ok) return;
+                const data = await res.json();
+                if (Array.isArray(data.accounts) && data.accounts.length > 2) {
+                    displayDeviceLimitModal(data.accounts);
+                } else {
+                    cancelAccountDeletion();
+                    document.getElementById('device-limit-modal')?.classList.add('hidden');
                 }
             } catch (e) {
                 console.error('Device account check error:', e);
@@ -718,20 +720,36 @@
             const modal = document.getElementById('device-limit-modal');
             const countElem = document.getElementById('device-account-count');
             const listElem = document.getElementById('device-account-list');
+            if (!modal || !countElem || !listElem) return;
 
+            cancelAccountDeletion();
             countElem.innerText = accounts.length;
             listElem.innerHTML = '';
 
             accounts.forEach(acc => {
                 const card = document.createElement('div');
                 card.className = 'device-account-card';
-                card.innerHTML = `
-                    <div>
-                        <div style="color: #fff; font-weight: 700; font-size: 0.9rem;">@${escapeHtml(acc.username)}</div>
-                        <div style="color: #64748b; font-size: 0.75rem;">${escapeHtml(acc.email)}</div>
-                    </div>
-                    <button onclick="promptDeleteDeviceAccount(${acc.id}, '${escapeHtml(acc.username)}')" style="padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Delete Account</button>
-                `;
+
+                const infoDiv = document.createElement('div');
+                const userDiv = document.createElement('div');
+                userDiv.style.cssText = 'color: #fff; font-weight: 700; font-size: 0.9rem;';
+                userDiv.textContent = `@${acc.username}`;
+
+                const emailDiv = document.createElement('div');
+                emailDiv.style.cssText = 'color: #64748b; font-size: 0.75rem;';
+                emailDiv.textContent = acc.email;
+
+                infoDiv.appendChild(userDiv);
+                infoDiv.appendChild(emailDiv);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.style.cssText = 'padding: 6px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem;';
+                delBtn.textContent = 'Delete Account';
+                delBtn.addEventListener('click', () => promptDeleteDeviceAccount(acc.id, acc.username));
+
+                card.appendChild(infoDiv);
+                card.appendChild(delBtn);
                 listElem.appendChild(card);
             });
 
@@ -1938,7 +1956,6 @@
                 }
             }
 
-            // Quoted Post Box
             let quoteHtml = '';
             if (msg.quoted_post) {
                 quoteHtml = `
@@ -1950,7 +1967,6 @@
                 `;
             }
 
-            // Poll Box
             let pollHtml = '';
             if (msg.poll && Array.isArray(msg.poll.options)) {
                 const total = msg.poll.total_votes || 0;

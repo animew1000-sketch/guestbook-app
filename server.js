@@ -73,7 +73,7 @@ io.use((socket, next) => {
 });
 
 const onlineUsers = new Map();
-const watchRooms = new Map(); // roomCode -> { id, title, host, users: Set }
+const watchRooms = new Map();
 
 const GACHA_REWARDS = [
     { title: 'SSR Lucky Puller', badge: '👑' },
@@ -327,7 +327,6 @@ async function attachPollsAndQuotesToPosts(posts, currentUserId) {
     const postIds = posts.map(p => Number(p.id)).filter(Boolean);
     const quotedIds = posts.map(p => Number(p.quoted_post_id)).filter(Boolean);
 
-    // Fetch quoted posts
     const quotedMap = new Map();
     if (quotedIds.length > 0) {
         const qPlaceholders = quotedIds.map(() => '?').join(',');
@@ -355,7 +354,6 @@ async function attachPollsAndQuotesToPosts(posts, currentUserId) {
         });
     }
 
-    // Fetch polls for posts
     const pollMap = new Map();
     if (postIds.length > 0) {
         const pPlaceholders = postIds.map(() => '?').join(',');
@@ -547,8 +545,10 @@ app.get('/api/device-accounts', async (req, res) => {
 
     try {
         const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
-        res.json({ accounts, count: accounts.length });
+        const list = Array.isArray(accounts) ? accounts : [];
+        res.json({ accounts: list, count: list.length });
     } catch (err) {
+        console.error('GET /api/device-accounts error:', err);
         res.status(500).json({ error: 'Failed to fetch device accounts.' });
     }
 });
@@ -579,12 +579,13 @@ app.post('/api/delete-device-account', async (req, res) => {
         await db.query('DELETE FROM users WHERE id = ?', [target_user_id]);
 
         const remainingAccounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [device_id]);
+        const list = Array.isArray(remainingAccounts) ? remainingAccounts : [];
 
         res.json({
             message: `Account @${user.username} deleted successfully.`,
-            remaining_count: remainingAccounts.length,
-            accounts: remainingAccounts,
-            can_proceed: remainingAccounts.length <= 2
+            remaining_count: list.length,
+            accounts: list,
+            can_proceed: list.length <= 2
         });
     } catch (err) {
         res.status(500).json({ error: 'Failed to delete account.' });
@@ -596,13 +597,14 @@ app.get('/api/me', async (req, res) => {
         const deviceId = req.session.user.device_id;
         if (deviceId) {
             const accounts = await db.query('SELECT id, username, email FROM users WHERE device_id = ?', [deviceId]);
-            if (accounts.length > 2) {
+            const list = Array.isArray(accounts) ? accounts : [];
+            if (list.length > 2) {
                 req.session.destroy();
                 res.clearCookie('anime_social_sid');
                 return res.status(403).json({
                     error: 'Device limit exceeded.',
                     device_limit_exceeded: true,
-                    accounts
+                    accounts: list
                 });
             }
         }
@@ -1039,7 +1041,7 @@ app.get('/api/blocks', async (req, res) => {
     }
 });
 
-// --- MESSAGES & POST CREATION (POLLS, QUOTES, SAVED, PINNED) ---
+// --- MESSAGES & POST CREATION ---
 
 app.get('/api/messages', async (req, res) => {
     const feedType = req.query.feed || 'public';
@@ -1106,7 +1108,6 @@ app.get('/api/messages', async (req, res) => {
             rows = rows.filter(r => !blockedIds.includes(Number(r.user_id)));
         }
 
-        // Sort user's own pinned post to the top if present
         const userPinnedId = req.session?.user?.pinned_post_id ? Number(req.session.user.pinned_post_id) : null;
         if (userPinnedId) {
             rows.sort((a, b) => {
@@ -1156,7 +1157,6 @@ app.post('/api/messages', async (req, res) => {
 
         const newPostId = Number(result.insertId);
 
-        // Create poll if provided
         if (poll && poll.question && Array.isArray(poll.options)) {
             const cleanOptions = poll.options.map(o => String(o).trim()).filter(Boolean).slice(0, 4);
             if (cleanOptions.length >= 2) {
