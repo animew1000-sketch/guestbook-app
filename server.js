@@ -13,8 +13,8 @@ const PORT = process.env.PORT || 10000;
 
 app.set('trust proxy', 1);
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
 const sessionMiddleware = session({
     name: 'anime_social_sid',
@@ -62,7 +62,7 @@ app.get(['/favicon.svg', '/favicon.ico'], (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
-const io = new Server(server, { maxHttpBufferSize: 1e6 });
+const io = new Server(server, { maxHttpBufferSize: 5e6 });
 
 io.use((socket, next) => {
     if (socket.request) {
@@ -73,6 +73,31 @@ io.use((socket, next) => {
 });
 
 const onlineUsers = new Map();
+const watchRooms = new Map(); // roomCode -> { id, title, host, users: Set }
+
+const GACHA_REWARDS = [
+    { title: 'SSR Lucky Puller', badge: '👑' },
+    { title: 'Sakura Shrine Blessings', badge: '🌸' },
+    { title: 'Ramen Critic', badge: '🍜' },
+    { title: 'Critical Hit Striker', badge: '⚔️' },
+    { title: 'Midnight Otaku', badge: '👾' },
+    { title: 'Golden Ticket Holder', badge: '🎫' },
+    { title: 'Arcane Tactician', badge: '🔮' },
+    { title: 'Turbo Drift Racer', badge: '⚡' }
+];
+
+function getTodayKey() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+function getWatchRoomList() {
+    return Array.from(watchRooms.values()).map(r => ({
+        id: r.id,
+        title: r.title,
+        host: r.host,
+        count: r.users.size
+    }));
+}
 
 io.on('connection', (socket) => {
     let sessionUser = (socket.request && socket.request.session) ? socket.request.session.user : null;
@@ -114,7 +139,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- DIRECT MESSAGES WITH BLOCK CHECK ---
+    // --- DIRECT MESSAGES WITH BLOCK CHECK (SUPPORTS IMAGE, GIF, VIDEO, AUDIO) ---
     socket.on('send_direct_message', async (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id, message, media_url, media_type, is_18plus } = data;
@@ -141,10 +166,10 @@ io.on('connection', (socket) => {
                 sender_id: Number(senderId),
                 sender_username: sessionUser ? sessionUser.username : 'User',
                 receiver_id: Number(receiver_id),
-                message,
-                media_url,
-                media_type,
-                is_18plus,
+                message: message || '',
+                media_url: media_url || null,
+                media_type: media_type || 'image',
+                is_18plus: Boolean(is_18plus),
                 created_at: new Date()
             };
 
@@ -152,7 +177,7 @@ io.on('connection', (socket) => {
             io.to(`user_${receiver_id}`).emit('dm_notification', {
                 sender_id: Number(senderId),
                 sender_username: sessionUser ? sessionUser.username : 'User',
-                message: message || 'Sent a media attachment'
+                message: message || (media_type === 'audio' ? 'Sent a voice clip' : 'Sent a media attachment')
             });
 
             socket.emit('message_sent_confirm', payload);
@@ -161,9 +186,90 @@ io.on('connection', (socket) => {
         }
     });
 
+    // --- LIVE REACTION / WATCH ROOMS ---
+    socket.on('get_watch_rooms', () => {
+        socket.emit('watch_rooms_list', getWatchRoomList());
+    });
+
+    socket.on('create_watch_room', (data) => {
+        const roomTitle = (data && data.title ? data.title.trim() : 'Anime Episode Watch Party').substring(0, 60);
+        const roomId = 'watch_' + Date.now().toString(36);
+        const hostName = sessionUser ? sessionUser.username : (data?.username || 'Guest');
+
+        watchRooms.set(roomId, {
+            id: roomId,
+            title: roomTitle,
+            host: hostName,
+            users: new Set([socket.id])
+        });
+
+        socket.join(roomId);
+        socket.emit('watch_room_joined', { id: roomId, title: roomTitle, host: hostName });
+        io.emit('watch_rooms_list', getWatchRoomList());
+    });
+
+    socket.on('join_watch_room', (roomId) => {
+        const room = watchRooms.get(roomId);
+        if (!room) {
+            return socket.emit('error_message', { error: 'Watch room no longer exists.' });
+        }
+        room.users.add(socket.id);
+        socket.join(roomId);
+        socket.emit('watch_room_joined', { id: room.id, title: room.title, host: room.host });
+        io.to(roomId).emit('watch_room_system', {
+            text: `@${sessionUser ? sessionUser.username : 'Someone'} joined the room.`
+        });
+        io.emit('watch_rooms_list', getWatchRoomList());
+    });
+
+    socket.on('leave_watch_room', (roomId) => {
+        const room = watchRooms.get(roomId);
+        if (room) {
+            room.users.delete(socket.id);
+            socket.leave(roomId);
+            if (room.users.size === 0) {
+                watchRooms.delete(roomId);
+            }
+        }
+        io.emit('watch_rooms_list', getWatchRoomList());
+    });
+
+    socket.on('watch_room_chat', (data) => {
+        if (!data || !data.roomId || !data.text) return;
+        const room = watchRooms.get(data.roomId);
+        if (!room) return;
+
+        io.to(data.roomId).emit('watch_room_message', {
+            username: sessionUser ? sessionUser.username : 'Guest',
+            text: String(data.text).trim().substring(0, 240),
+            created_at: new Date()
+        });
+    });
+
+    socket.on('watch_room_emote', (data) => {
+        if (!data || !data.roomId || !data.emote) return;
+        io.to(data.roomId).emit('watch_room_reaction', {
+            username: sessionUser ? sessionUser.username : 'Guest',
+            emote: String(data.emote).substring(0, 8)
+        });
+    });
+
     socket.on('disconnect', () => {
         if (sessionUser) {
             onlineUsers.delete(Number(sessionUser.id));
+        }
+        let changed = false;
+        for (const [roomId, room] of watchRooms.entries()) {
+            if (room.users.has(socket.id)) {
+                room.users.delete(socket.id);
+                changed = true;
+                if (room.users.size === 0) {
+                    watchRooms.delete(roomId);
+                }
+            }
+        }
+        if (changed) {
+            io.emit('watch_rooms_list', getWatchRoomList());
         }
     });
 });
@@ -185,6 +291,136 @@ function buildAvatarUrl(customUrl, style, seed) {
     const selectedStyle = style || 'bottts';
     const selectedSeed = seed || 'default';
     return `https://api.dicebear.com/7.x/${selectedStyle}/svg?seed=${encodeURIComponent(selectedSeed)}`;
+}
+
+function formatUserSessionObj(user) {
+    const todayKey = getTodayKey();
+    const hasDailyReward = user.daily_gacha_date === todayKey && user.daily_gacha_title;
+    const avatarStyle = user.avatar_style || 'bottts';
+    const avatarSeed = user.avatar_seed || user.username;
+    const customAvatarUrl = user.custom_avatar_url || null;
+
+    return {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        birthdate: user.birthdate,
+        age_verified: Boolean(user.age_verified),
+        is_minor: Boolean(user.is_minor),
+        avatar_style: avatarStyle,
+        avatar_seed: avatarSeed,
+        custom_avatar_url: customAvatarUrl,
+        avatar_url: buildAvatarUrl(customAvatarUrl, avatarStyle, avatarSeed),
+        title: hasDailyReward ? user.daily_gacha_title : (user.title || 'Novice Adventurer'),
+        badge: hasDailyReward ? user.daily_gacha_badge : (user.badge || '⭐'),
+        base_title: user.title || 'Novice Adventurer',
+        base_badge: user.badge || '⭐',
+        daily_gacha_claimed: Boolean(hasDailyReward),
+        pinned_post_id: user.pinned_post_id ? Number(user.pinned_post_id) : null,
+        device_id: user.device_id
+    };
+}
+
+async function attachPollsAndQuotesToPosts(posts, currentUserId) {
+    if (!Array.isArray(posts) || posts.length === 0) return [];
+
+    const postIds = posts.map(p => Number(p.id)).filter(Boolean);
+    const quotedIds = posts.map(p => Number(p.quoted_post_id)).filter(Boolean);
+
+    // Fetch quoted posts
+    const quotedMap = new Map();
+    if (quotedIds.length > 0) {
+        const qPlaceholders = quotedIds.map(() => '?').join(',');
+        const qRows = await db.query(
+            `SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge
+             FROM messages
+             LEFT JOIN users ON messages.user_id = users.id
+             WHERE messages.id IN (${qPlaceholders})`,
+            quotedIds
+        );
+        (Array.isArray(qRows) ? qRows : []).forEach(qr => {
+            quotedMap.set(Number(qr.id), {
+                id: Number(qr.id),
+                user_id: qr.user_id ? Number(qr.user_id) : null,
+                name: qr.name,
+                message: qr.message,
+                image_url: qr.image_url,
+                is_18plus: Boolean(qr.is_18plus),
+                is_spoiler: Boolean(qr.is_spoiler),
+                created_at: qr.created_at,
+                avatar_url: buildAvatarUrl(qr.custom_avatar_url, qr.avatar_style, qr.avatar_seed || qr.name),
+                title: qr.title || 'Novice Adventurer',
+                badge: qr.badge || '⭐'
+            });
+        });
+    }
+
+    // Fetch polls for posts
+    const pollMap = new Map();
+    if (postIds.length > 0) {
+        const pPlaceholders = postIds.map(() => '?').join(',');
+        const pollRows = await db.query(`SELECT * FROM polls WHERE post_id IN (${pPlaceholders})`, postIds);
+        const pollList = Array.isArray(pollRows) ? pollRows : [];
+
+        if (pollList.length > 0) {
+            const pollIds = pollList.map(pl => Number(pl.id));
+            const optPlaceholders = pollIds.map(() => '?').join(',');
+            const optRows = await db.query(`SELECT * FROM poll_options WHERE poll_id IN (${optPlaceholders}) ORDER BY id ASC`, pollIds);
+            const voteRows = await db.query(`SELECT poll_id, option_id, user_id FROM poll_votes WHERE poll_id IN (${optPlaceholders})`, pollIds);
+
+            const optionsByPoll = new Map();
+            (Array.isArray(optRows) ? optRows : []).forEach(opt => {
+                const pid = Number(opt.poll_id);
+                if (!optionsByPoll.has(pid)) optionsByPoll.set(pid, []);
+                optionsByPoll.get(pid).push({
+                    id: Number(opt.id),
+                    text: opt.option_text,
+                    votes: 0
+                });
+            });
+
+            const userVotedOptionByPoll = new Map();
+            (Array.isArray(voteRows) ? voteRows : []).forEach(v => {
+                const pid = Number(v.poll_id);
+                const oid = Number(v.option_id);
+                const opts = optionsByPoll.get(pid) || [];
+                const targetOpt = opts.find(o => o.id === oid);
+                if (targetOpt) targetOpt.votes += 1;
+
+                if (currentUserId && Number(v.user_id) === Number(currentUserId)) {
+                    userVotedOptionByPoll.set(pid, oid);
+                }
+            });
+
+            pollList.forEach(pl => {
+                const pid = Number(pl.id);
+                const opts = optionsByPoll.get(pid) || [];
+                const totalVotes = opts.reduce((sum, o) => sum + o.votes, 0);
+                pollMap.set(Number(pl.post_id), {
+                    id: pid,
+                    question: pl.question,
+                    options: opts,
+                    total_votes: totalVotes,
+                    user_voted_option_id: userVotedOptionByPoll.get(pid) || null
+                });
+            });
+        }
+    }
+
+    return posts.map(r => {
+        const todayKey = getTodayKey();
+        const activeDaily = r.daily_gacha_date === todayKey && r.daily_gacha_title;
+        return {
+            ...r,
+            avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.name),
+            title: activeDaily ? r.daily_gacha_title : (r.title || 'Novice Adventurer'),
+            badge: activeDaily ? r.daily_gacha_badge : (r.badge || '⭐'),
+            is_spoiler: Boolean(r.is_spoiler),
+            is_18plus: Boolean(r.is_18plus),
+            quoted_post: r.quoted_post_id ? (quotedMap.get(Number(r.quoted_post_id)) || null) : null,
+            poll: pollMap.get(Number(r.id)) || null
+        };
+    });
 }
 
 const PROFANITY_LIST = ['badword1', 'badword2', 'hate speech', 'spamlink'];
@@ -290,27 +526,11 @@ app.post('/api/login', async (req, res) => {
             isMinor = age < 18;
             ageVerified = !isMinor;
             await db.query('UPDATE users SET is_minor = ?, age_verified = ? WHERE id = ?', [isMinor, ageVerified, user.id]);
+            user.is_minor = isMinor;
+            user.age_verified = ageVerified;
         }
 
-        const avatarStyle = user.avatar_style || 'bottts';
-        const avatarSeed = user.avatar_seed || user.username;
-        const customAvatarUrl = user.custom_avatar_url || null;
-
-        req.session.user = {
-            id: user.id,
-            username: user.username,
-            email: user.email,
-            birthdate: user.birthdate,
-            age_verified: ageVerified,
-            is_minor: isMinor,
-            avatar_style: avatarStyle,
-            avatar_seed: avatarSeed,
-            custom_avatar_url: customAvatarUrl,
-            avatar_url: buildAvatarUrl(customAvatarUrl, avatarStyle, avatarSeed),
-            title: user.title || 'Novice Adventurer',
-            badge: user.badge || '⭐',
-            device_id: user.device_id
-        };
+        req.session.user = formatUserSessionObj(user);
 
         req.session.save(err => {
             if (err) return res.status(500).json({ error: 'Session save error' });
@@ -400,6 +620,53 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
+// --- DAILY GACHA / LUCK PULL ---
+app.post('/api/daily-gacha', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to pull daily gacha.' });
+    }
+
+    const userId = Number(req.session.user.id);
+    const todayKey = getTodayKey();
+
+    try {
+        const rows = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+        const user = Array.isArray(rows) ? rows[0] : null;
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+
+        if (user.daily_gacha_date === todayKey && user.daily_gacha_title) {
+            return res.status(400).json({
+                error: `You already pulled today's gacha (${user.daily_gacha_badge} ${user.daily_gacha_title}). Come back tomorrow!`
+            });
+        }
+
+        const reward = GACHA_REWARDS[Math.floor(Math.random() * GACHA_REWARDS.length)];
+
+        await db.query(
+            'UPDATE users SET daily_gacha_date = ?, daily_gacha_title = ?, daily_gacha_badge = ? WHERE id = ?',
+            [todayKey, reward.title, reward.badge, userId]
+        );
+
+        user.daily_gacha_date = todayKey;
+        user.daily_gacha_title = reward.title;
+        user.daily_gacha_badge = reward.badge;
+        req.session.user = formatUserSessionObj(user);
+
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+            res.json({
+                reward,
+                user: req.session.user,
+                message: `Daily Gacha Pull: ${reward.badge} ${reward.title}!`
+            });
+        });
+    } catch (err) {
+        console.error('Daily gacha error:', err);
+        res.status(500).json({ error: 'Failed to perform daily gacha pull.' });
+    }
+});
+
+// --- PROFILE UPDATE ---
 app.post('/api/avatar', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to update profile.' });
@@ -418,20 +685,18 @@ app.post('/api/avatar', async (req, res) => {
             [style, seed, customUrl, userTitle, userBadge, req.session.user.id]
         );
 
-        req.session.user.avatar_style = style;
-        req.session.user.avatar_seed = seed;
-        req.session.user.custom_avatar_url = customUrl;
-        req.session.user.avatar_url = buildAvatarUrl(customUrl, style, seed);
-        req.session.user.title = userTitle;
-        req.session.user.badge = userBadge;
+        const rows = await db.query('SELECT * FROM users WHERE id = ?', [req.session.user.id]);
+        const updatedUser = Array.isArray(rows) && rows[0] ? rows[0] : req.session.user;
+        req.session.user = formatUserSessionObj(updatedUser);
 
         req.session.save(err => {
             if (err) return res.status(500).json({ error: 'Session save error' });
             res.json({
                 message: 'Profile updated!',
+                user: req.session.user,
                 avatar_url: req.session.user.avatar_url,
-                title: userTitle,
-                badge: userBadge
+                title: req.session.user.title,
+                badge: req.session.user.badge
             });
         });
     } catch (err) {
@@ -550,6 +815,138 @@ app.post('/api/follow/:target_id', async (req, res) => {
     }
 });
 
+// --- PINNED POST & SAVED BOOKMARKS ---
+
+app.post('/api/pin/:post_id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to pin posts.' });
+    }
+
+    const userId = Number(req.session.user.id);
+    const postId = Number(req.params.post_id);
+
+    try {
+        const posts = await db.query('SELECT id, user_id FROM messages WHERE id = ?', [postId]);
+        if (!Array.isArray(posts) || posts.length === 0) {
+            return res.status(404).json({ error: 'Post not found.' });
+        }
+        if (Number(posts[0].user_id) !== userId) {
+            return res.status(403).json({ error: 'You can only pin your own posts.' });
+        }
+
+        const currentPinned = req.session.user.pinned_post_id ? Number(req.session.user.pinned_post_id) : null;
+        const nextPinned = currentPinned === postId ? null : postId;
+
+        await db.query('UPDATE users SET pinned_post_id = ? WHERE id = ?', [nextPinned, userId]);
+        req.session.user.pinned_post_id = nextPinned;
+
+        req.session.save(err => {
+            if (err) return res.status(500).json({ error: 'Session save error' });
+            res.json({
+                pinned_post_id: nextPinned,
+                message: nextPinned ? 'Post pinned to your profile/feed!' : 'Post unpinned.'
+            });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to pin post.' });
+    }
+});
+
+app.get('/api/saved-posts', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.json([]);
+    }
+    try {
+        const rows = await db.query('SELECT post_id FROM saved_posts WHERE user_id = ?', [Number(req.session.user.id)]);
+        res.json((Array.isArray(rows) ? rows : []).map(r => Number(r.post_id)));
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch saved posts.' });
+    }
+});
+
+app.post('/api/save/:post_id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to bookmark posts.' });
+    }
+
+    const userId = Number(req.session.user.id);
+    const postId = Number(req.params.post_id);
+
+    try {
+        const existing = await db.query('SELECT id FROM saved_posts WHERE user_id = ? AND post_id = ?', [userId, postId]);
+        if (Array.isArray(existing) && existing.length > 0) {
+            await db.query('DELETE FROM saved_posts WHERE user_id = ? AND post_id = ?', [userId, postId]);
+            return res.json({ saved: false, post_id: postId, message: 'Removed from saved posts.' });
+        } else {
+            await db.query('INSERT INTO saved_posts (user_id, post_id) VALUES (?, ?)', [userId, postId]);
+            return res.json({ saved: true, post_id: postId, message: 'Post bookmarked!' });
+        }
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update saved post.' });
+    }
+});
+
+// --- POLL VOTING ---
+
+app.post('/api/polls/:poll_id/vote', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to vote in polls.' });
+    }
+
+    const pollId = Number(req.params.poll_id);
+    const optionId = Number(req.body.option_id);
+    const userId = Number(req.session.user.id);
+
+    if (!pollId || !optionId) {
+        return res.status(400).json({ error: 'Poll ID and Option ID required.' });
+    }
+
+    try {
+        const opts = await db.query('SELECT id, post_id FROM poll_options WHERE id = ? AND poll_id = ?', [optionId, pollId]);
+        if (!Array.isArray(opts) || opts.length === 0) {
+            return res.status(404).json({ error: 'Poll option not found.' });
+        }
+        const postId = Number(opts[0].post_id);
+
+        const existingVote = await db.query('SELECT id FROM poll_votes WHERE poll_id = ? AND user_id = ?', [pollId, userId]);
+        if (Array.isArray(existingVote) && existingVote.length > 0) {
+            await db.query('UPDATE poll_votes SET option_id = ? WHERE poll_id = ? AND user_id = ?', [optionId, pollId, userId]);
+        } else {
+            await db.query('INSERT INTO poll_votes (poll_id, option_id, user_id) VALUES (?, ?, ?)', [pollId, optionId, userId]);
+        }
+
+        const allOpts = await db.query('SELECT * FROM poll_options WHERE poll_id = ? ORDER BY id ASC', [pollId]);
+        const allVotes = await db.query('SELECT option_id FROM poll_votes WHERE poll_id = ?', [pollId]);
+
+        const counts = new Map();
+        (Array.isArray(allVotes) ? allVotes : []).forEach(v => {
+            const oid = Number(v.option_id);
+            counts.set(oid, (counts.get(oid) || 0) + 1);
+        });
+
+        const formattedOptions = (Array.isArray(allOpts) ? allOpts : []).map(o => ({
+            id: Number(o.id),
+            text: o.option_text,
+            votes: counts.get(Number(o.id)) || 0
+        }));
+
+        const pollUpdatePayload = {
+            post_id: postId,
+            poll: {
+                id: pollId,
+                options: formattedOptions,
+                total_votes: (Array.isArray(allVotes) ? allVotes.length : 0)
+            }
+        };
+
+        io.emit('poll_updated', pollUpdatePayload);
+        res.json({ ...pollUpdatePayload, user_voted_option_id: optionId });
+    } catch (err) {
+        console.error('Poll vote error:', err);
+        res.status(500).json({ error: 'Failed to record poll vote.' });
+    }
+});
+
 // --- REPORTING & BLOCKING SYSTEM ---
 
 app.post('/api/reports', async (req, res) => {
@@ -622,9 +1019,9 @@ app.get('/api/blocks', async (req, res) => {
 
     try {
         const rows = await db.query(
-            `SELECT users.id, users.username, users.email, users.avatar_style, users.avatar_seed, users.custom_avatar_url 
-             FROM blocks 
-             INNER JOIN users ON blocks.blocked_id = users.id 
+            `SELECT users.id, users.username, users.email, users.avatar_style, users.avatar_seed, users.custom_avatar_url
+             FROM blocks
+             INNER JOIN users ON blocks.blocked_id = users.id
              WHERE blocks.blocker_id = ?`,
             [req.session.user.id]
         );
@@ -642,12 +1039,12 @@ app.get('/api/blocks', async (req, res) => {
     }
 });
 
-// --- MESSAGES & POST CREATION ---
+// --- MESSAGES & POST CREATION (POLLS, QUOTES, SAVED, PINNED) ---
 
 app.get('/api/messages', async (req, res) => {
     const feedType = req.query.feed || 'public';
     let show18Plus = req.query.show18plus === 'true';
-    const currentUserId = (req.session && req.session.user) ? req.session.user.id : null;
+    const currentUserId = (req.session && req.session.user) ? Number(req.session.user.id) : null;
 
     if (req.session && req.session.user && req.session.user.is_minor) {
         show18Plus = false;
@@ -657,9 +1054,24 @@ app.get('/api/messages', async (req, res) => {
         let query = '';
         let params = [];
 
-        if (feedType === 'following' && currentUserId) {
+        if (feedType === 'saved' && currentUserId) {
             query = `
-                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge 
+                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge,
+                       users.daily_gacha_date, users.daily_gacha_title, users.daily_gacha_badge, users.pinned_post_id
+                FROM messages
+                INNER JOIN saved_posts ON messages.id = saved_posts.post_id
+                LEFT JOIN users ON messages.user_id = users.id
+                WHERE saved_posts.user_id = ?
+            `;
+            params.push(currentUserId);
+            if (!show18Plus) {
+                query += ' AND (messages.is_18plus IS FALSE OR messages.is_18plus IS NULL)';
+            }
+            query += ' ORDER BY saved_posts.id DESC';
+        } else if (feedType === 'following' && currentUserId) {
+            query = `
+                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge,
+                       users.daily_gacha_date, users.daily_gacha_title, users.daily_gacha_badge, users.pinned_post_id
                 FROM messages
                 INNER JOIN follows ON messages.user_id = follows.following_id
                 LEFT JOIN users ON messages.user_id = users.id
@@ -673,9 +1085,10 @@ app.get('/api/messages', async (req, res) => {
             query += ' ORDER BY messages.id DESC';
         } else {
             query = `
-                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge 
-                FROM messages 
-                LEFT JOIN users ON messages.user_id = users.id 
+                SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge,
+                       users.daily_gacha_date, users.daily_gacha_title, users.daily_gacha_badge, users.pinned_post_id
+                FROM messages
+                LEFT JOIN users ON messages.user_id = users.id
                 WHERE 1=1
             `;
             if (!show18Plus) {
@@ -685,23 +1098,28 @@ app.get('/api/messages', async (req, res) => {
         }
 
         let rows = await db.query(query, params);
+        rows = Array.isArray(rows) ? rows : [];
 
         if (currentUserId) {
             const blockedUserRows = await db.query('SELECT blocked_id FROM blocks WHERE blocker_id = ?', [currentUserId]);
-            const blockedIds = blockedUserRows.map(b => Number(b.blocked_id));
+            const blockedIds = (Array.isArray(blockedUserRows) ? blockedUserRows : []).map(b => Number(b.blocked_id));
             rows = rows.filter(r => !blockedIds.includes(Number(r.user_id)));
         }
 
-        const rowsWithAvatars = rows.map(r => ({
-            ...r,
-            avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.name),
-            title: r.title || 'Novice Adventurer',
-            badge: r.badge || '⭐',
-            is_spoiler: Boolean(r.is_spoiler)
-        }));
+        // Sort user's own pinned post to the top if present
+        const userPinnedId = req.session?.user?.pinned_post_id ? Number(req.session.user.pinned_post_id) : null;
+        if (userPinnedId) {
+            rows.sort((a, b) => {
+                const aPinned = Number(a.id) === userPinnedId ? 1 : 0;
+                const bPinned = Number(b.id) === userPinnedId ? 1 : 0;
+                return bPinned - aPinned;
+            });
+        }
 
-        res.json(rowsWithAvatars);
+        const enriched = await attachPollsAndQuotesToPosts(rows, currentUserId);
+        res.json(enriched);
     } catch (err) {
+        console.error('GET /api/messages error:', err);
         res.status(500).json({ error: 'Failed to fetch messages.' });
     }
 });
@@ -711,10 +1129,10 @@ app.post('/api/messages', async (req, res) => {
         return res.status(401).json({ error: 'You must log in to post.' });
     }
 
-    const { message, image_url, is_18plus, is_spoiler } = req.body;
+    const { message, image_url, is_18plus, is_spoiler, quoted_post_id, poll } = req.body;
 
-    if ((!message || message.trim() === '') && !image_url) {
-        return res.status(400).json({ error: 'A post must contain text or an image.' });
+    if ((!message || message.trim() === '') && !image_url && !quoted_post_id && (!poll || !poll.question)) {
+        return res.status(400).json({ error: 'A post must contain text, an image, a quote, or a poll.' });
     }
 
     const filterResult = applyTextFilters(message);
@@ -726,23 +1144,55 @@ app.post('/api/messages', async (req, res) => {
         return res.status(403).json({ error: 'Accounts under 18 are restricted from submitting mature 18+ content.' });
     }
 
-    const userId = req.session.user.id;
+    const userId = Number(req.session.user.id);
     const authorName = req.session.user.username;
+    const quotedId = quoted_post_id ? Number(quoted_post_id) : null;
 
     try {
         const result = await db.query(
-            'INSERT INTO messages (user_id, name, message, image_url, is_18plus, is_spoiler) VALUES (?, ?, ?, ?, ?, ?)',
-            [userId, authorName, finalMessage, image_url || null, detected18Plus, detectedSpoiler]
+            'INSERT INTO messages (user_id, name, message, image_url, is_18plus, is_spoiler, quoted_post_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [userId, authorName, finalMessage, image_url || null, detected18Plus, detectedSpoiler, quotedId]
         );
 
-        const postPayload = {
-            id: result.insertId,
+        const newPostId = Number(result.insertId);
+
+        // Create poll if provided
+        if (poll && poll.question && Array.isArray(poll.options)) {
+            const cleanOptions = poll.options.map(o => String(o).trim()).filter(Boolean).slice(0, 4);
+            if (cleanOptions.length >= 2) {
+                const pollRes = await db.query(
+                    'INSERT INTO polls (post_id, question) VALUES (?, ?)',
+                    [newPostId, String(poll.question).trim().substring(0, 255)]
+                );
+                const pollId = Number(pollRes.insertId);
+                for (const optText of cleanOptions) {
+                    await db.query(
+                        'INSERT INTO poll_options (poll_id, option_text) VALUES (?, ?)',
+                        [pollId, optText.substring(0, 120)]
+                    );
+                }
+            }
+        }
+
+        const insertedRows = await db.query(
+            `SELECT messages.*, users.avatar_style, users.avatar_seed, users.custom_avatar_url, users.title, users.badge,
+                    users.daily_gacha_date, users.daily_gacha_title, users.daily_gacha_badge
+             FROM messages
+             LEFT JOIN users ON messages.user_id = users.id
+             WHERE messages.id = ?`,
+            [newPostId]
+        );
+
+        const enrichedList = await attachPollsAndQuotesToPosts(Array.isArray(insertedRows) ? insertedRows : [], userId);
+        const postPayload = enrichedList[0] || {
+            id: newPostId,
             user_id: userId,
             name: authorName,
             message: finalMessage,
             image_url: image_url || null,
             is_18plus: detected18Plus,
             is_spoiler: detectedSpoiler,
+            quoted_post_id: quotedId,
             created_at: new Date(),
             avatar_url: req.session.user.avatar_url,
             title: req.session.user.title || 'Novice Adventurer',
@@ -753,6 +1203,7 @@ app.post('/api/messages', async (req, res) => {
 
         res.json({ message: 'Post created successfully!', post: postPayload });
     } catch (err) {
+        console.error('POST /api/messages error:', err);
         res.status(500).json({ error: `Failed to save post: ${err.message}` });
     }
 });

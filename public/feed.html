@@ -39,6 +39,14 @@
             border-radius: 4px;
             text-transform: uppercase;
         }
+        .pinned-badge {
+            background: #0ea5e9;
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
         .user-title-badge {
             font-size: 0.75rem;
             color: #c084fc;
@@ -116,6 +124,51 @@
             font-style: italic;
             padding: 4px 12px;
         }
+        .poll-box {
+            margin-top: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .poll-option-btn {
+            width: 100%;
+            text-align: left;
+            padding: 8px 10px;
+            margin-top: 6px;
+            background: #1e293b;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            color: #f8fafc;
+            cursor: pointer;
+            font-size: 0.82rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .poll-option-btn:hover {
+            border-color: #818cf8;
+        }
+        .poll-option-btn.voted {
+            border-color: #a855f7;
+            background: rgba(168, 85, 247, 0.2);
+        }
+        .quote-box {
+            margin-top: 8px;
+            padding: 10px;
+            background: #0f172a;
+            border-left: 3px solid #818cf8;
+            border-radius: 6px;
+            font-size: 0.82rem;
+        }
+        .post-actions-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid #334155;
+        }
     </style>
 </head>
 <body>
@@ -135,7 +188,9 @@
                     <span id="user-title-header" style="font-size: 0.7rem; color: #a855f7;"></span>
                 </div>
             </div>
-            <div style="display: flex; gap: 8px;">
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button id="gacha-btn" class="btn-small hidden" style="background: #d97706;" onclick="pullDailyGacha()">🎲 Daily Gacha</button>
+                <button id="watch-btn" class="btn-small" style="background: #059669;" onclick="openWatchRoomsModal()">📺 Watch Rooms</button>
                 <button id="inbox-btn" class="btn-small hidden" style="background: #0284c7;" onclick="openInboxModal()">💬 Messages</button>
                 <button id="blocks-btn" class="btn-small hidden" style="background: #e11d48;" onclick="openBlockedModal()">🚫 Blocked</button>
                 <button id="avatar-btn" class="btn-small hidden" style="background: #a855f7;" onclick="openAvatarModal()">Edit Profile</button>
@@ -158,17 +213,33 @@
             <a href="auth.html" class="login-notice-btn" style="display: inline-block; text-decoration: none;">Login / Register</a>
         </div>
 
+        <!-- Quote Banner (shown when quoting an existing post) -->
+        <div id="quote-composer-banner" class="hidden" style="background: #1e293b; border: 1px solid #818cf8; border-radius: 8px; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <span id="quote-composer-label" style="font-size: 0.8rem; color: #c4b5fd;">Quoting post...</span>
+            <button type="button" onclick="cancelQuotePost()" style="background: transparent; border: none; color: #94a3b8; cursor: pointer;">✕</button>
+        </div>
+
         <!-- Create Post Section -->
         <form id="post-form" class="hidden" onsubmit="handlePostSubmit(event)">
             <input type="text" id="post-author" placeholder="Your Name or Display Name" readonly required>
-            <textarea id="post-content" rows="3" placeholder="Write a public update... (Optional if attaching an image)"></textarea>
+            <textarea id="post-content" rows="3" placeholder="Write a public update... (Optional if attaching an image or poll)"></textarea>
 
-            <div style="display: flex; gap: 8px; align-items: center;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                 <input type="file" id="post-image" accept="image/png, image/jpeg, image/gif, image/webp" onchange="handleImageSelect(event)">
                 <button type="button" id="meme-studio-btn" class="btn-small hidden" style="background: #a855f7; white-space: nowrap;" onclick="openMemeStudio()">✨ Open Image Studio</button>
+                <button type="button" class="btn-small" style="background: #4f46e5; white-space: nowrap;" onclick="togglePollCreator()">📊 Add Poll</button>
             </div>
 
-            <div style="display: flex; gap: 16px; margin-top: 6px;">
+            <!-- Poll Builder -->
+            <div id="poll-creator-box" class="hidden" style="background: #0f172a; border: 1px solid #475569; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
+                <input type="text" id="poll-question-input" placeholder="Poll question (e.g., Best arc this season?)">
+                <input type="text" id="poll-opt-1" placeholder="Option 1">
+                <input type="text" id="poll-opt-2" placeholder="Option 2">
+                <input type="text" id="poll-opt-3" placeholder="Option 3 (optional)">
+                <input type="text" id="poll-opt-4" placeholder="Option 4 (optional)">
+            </div>
+
+            <div style="display: flex; gap: 16px; margin-top: 6px; flex-wrap: wrap;">
                 <label id="post-18plus-wrapper" style="display: flex; align-items: center; gap: 8px; color: #f43f5e; font-size: 0.85rem; cursor: pointer;">
                     <input type="checkbox" id="post-is-18plus">
                     Mark as 18+ / Mature Content
@@ -187,10 +258,50 @@
         <div class="tab-buttons">
             <button class="tab-btn active" id="tab-public" onclick="switchFeedTab('public')">Public Feed</button>
             <button class="tab-btn" id="tab-following" onclick="switchFeedTab('following')">Following Feed</button>
+            <button class="tab-btn" id="tab-saved" onclick="switchFeedTab('saved')">🔖 Saved</button>
         </div>
 
         <!-- Feed List -->
         <div id="messages" class="messages"></div>
+    </div>
+
+    <!-- Live Reaction / Watch Rooms Modal -->
+    <div id="watch-rooms-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.88); display: flex; justify-content: center; align-items: center; z-index: 2600; padding: 16px;">
+        <div style="background: #1e293b; border: 1px solid #10b981; padding: 20px; border-radius: 12px; max-width: 460px; width: 100%;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 style="color: #34d399; margin: 0;">📺 Live Watch & Reaction Rooms</h3>
+                <button onclick="closeWatchRoomsModal()" style="background: transparent; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer;">✕</button>
+            </div>
+
+            <div id="watch-lobby-view">
+                <div style="display: flex; gap: 8px; margin-bottom: 14px;">
+                    <input type="text" id="watch-room-title-input" placeholder="Room name (e.g., Episode 12 Watch Party)..." style="flex: 1;">
+                    <button type="button" onclick="createWatchRoom()" class="btn-small" style="background: #059669; padding: 8px 12px;">Create</button>
+                </div>
+                <div id="watch-rooms-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto;"></div>
+            </div>
+
+            <div id="watch-active-room-view" class="hidden">
+                <div style="display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px;">
+                    <strong id="active-watch-room-title" style="color: #e2e8f0; font-size: 0.9rem;">Room</strong>
+                    <button type="button" onclick="leaveWatchRoom()" class="btn-small" style="background: #ef4444;">Leave</button>
+                </div>
+
+                <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                    <button type="button" onclick="sendWatchEmote('🔥')" class="btn-small" style="background: #334155;">🔥 Hype</button>
+                    <button type="button" onclick="sendWatchEmote('😂')" class="btn-small" style="background: #334155;">😂 LOL</button>
+                    <button type="button" onclick="sendWatchEmote('😱')" class="btn-small" style="background: #334155;">😱 Twist</button>
+                    <button type="button" onclick="sendWatchEmote('💖')" class="btn-small" style="background: #334155;">💖 Love</button>
+                </div>
+
+                <div id="watch-room-chat" style="height: 180px; overflow-y: auto; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem;"></div>
+
+                <div style="display: flex; gap: 6px;">
+                    <input type="text" id="watch-room-input" placeholder="React live in chat..." style="flex: 1;" onkeydown="if(event.key === 'Enter') sendWatchChat()">
+                    <button type="button" onclick="sendWatchChat()" class="btn-small" style="background: #6366f1; padding: 8px 14px;">Send</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Blocked Users Management Modal -->
@@ -256,7 +367,7 @@
         </div>
     </div>
 
-    <!-- Direct Messaging Drawer -->
+    <!-- Direct Messaging Drawer (with Audio / Voice Clip Recorder) -->
     <div id="dm-modal" class="hidden" style="position: fixed; top: 0; right: 0; width: 380px; height: 100vh; background: #0f172a; border-left: 1px solid #334155; display: flex; flex-direction: column; z-index: 1500;">
         <div style="padding: 12px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center;">
             <h3 id="dm-recipient-title" style="color: #818cf8; margin: 0; font-size: 1rem;">Chat</h3>
@@ -273,12 +384,13 @@
         </div>
 
         <div style="padding: 10px; background: #1e293b; border-top: 1px solid #334155; display: flex; flex-direction: column; gap: 6px;">
-            <div style="display: flex; gap: 6px;">
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                 <button type="button" onclick="toggleGiphyPicker()" class="btn-small" style="background: #e11d48; padding: 4px 8px; font-size: 0.75rem;">Giphy</button>
                 <input type="file" id="dm-gif-input" accept="image/gif" style="display: none;" onchange="handleGifUpload(event)">
                 <button type="button" onclick="document.getElementById('dm-gif-input').click()" class="btn-small" style="background: #a855f7; padding: 4px 8px; font-size: 0.75rem;">Upload GIF</button>
                 <input type="file" id="dm-video-input" accept="video/mp4,video/webm" style="display: none;" onchange="handleVideoUpload(event)">
                 <button type="button" onclick="document.getElementById('dm-video-input').click()" class="btn-small" style="background: #0284c7; padding: 4px 8px; font-size: 0.75rem;">🎥 Video</button>
+                <button type="button" id="dm-voice-btn" onclick="toggleVoiceRecording()" class="btn-small" style="background: #16a34a; padding: 4px 8px; font-size: 0.75rem;">🎤 Voice</button>
             </div>
 
             <div style="display: flex; gap: 6px;">
@@ -368,6 +480,7 @@
         let currentUser = null;
         let currentFeedTab = 'public';
         let followingUserIds = [];
+        let savedPostIds = [];
         let blockedUsersList = [];
         let blockedUserIds = [];
         let show18Plus = localStorage.getItem('show18Plus') === 'true';
@@ -376,11 +489,13 @@
         let selectedOriginalImage = null;
         let editedBase64Image = null;
         let selectedBadgeEmoji = '⭐';
+        let quotedPostData = null;
 
         let clientNsfwModel = null;
 
         let socket = null;
         let currentActiveDmUserId = null;
+        let activeWatchRoomId = null;
         let selectedMediaUrl = null;
         let selectedMediaType = 'image';
         let unreadDmSenders = new Set();
@@ -388,6 +503,9 @@
         let reportingPostId = null;
 
         let typingTimeout = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecordingAudio = false;
 
         const GIPHY_API_KEY = 'YOUR_GIPHY_API_KEY';
         const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUDINARY_CLOUD_NAME';
@@ -417,23 +535,170 @@
 
             const urlParams = new URLSearchParams(window.location.search);
             const tabParam = urlParams.get('tab');
-            if (tabParam === 'following' || tabParam === 'public') {
+            if (tabParam === 'following' || tabParam === 'public' || tabParam === 'saved') {
                 currentFeedTab = tabParam;
             }
 
-            const publicBtn = document.getElementById('tab-public');
-            const followingBtn = document.getElementById('tab-following');
-            if (publicBtn) publicBtn.classList.toggle('active', currentFeedTab === 'public');
-            if (followingBtn) followingBtn.classList.toggle('active', currentFeedTab === 'following');
-
+            syncFeedTabButtons();
             renderEmojiGrid();
             await checkDeviceAccounts();
             await checkUserSession();
             await fetchFollowingList();
+            await fetchSavedPostsList();
             await fetchBlockList();
             loadMessages();
         });
 
+        function syncFeedTabButtons() {
+            const publicBtn = document.getElementById('tab-public');
+            const followingBtn = document.getElementById('tab-following');
+            const savedBtn = document.getElementById('tab-saved');
+            if (publicBtn) publicBtn.classList.toggle('active', currentFeedTab === 'public');
+            if (followingBtn) followingBtn.classList.toggle('active', currentFeedTab === 'following');
+            if (savedBtn) savedBtn.classList.toggle('active', currentFeedTab === 'saved');
+        }
+
+        // --- DAILY GACHA ---
+        async function pullDailyGacha() {
+            if (!currentUser) return;
+            try {
+                const res = await fetch('/api/daily-gacha', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    currentUser = data.user;
+                    updateUIState();
+                    alert(`${data.message} Equipped for today!`);
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Daily gacha unavailable.');
+                }
+            } catch (err) {
+                alert('Error pulling daily gacha.');
+            }
+        }
+
+        // --- POLL CREATOR & QUOTE COMPOSER ---
+        function togglePollCreator() {
+            document.getElementById('poll-creator-box').classList.toggle('hidden');
+        }
+
+        function startQuotePost(postId, authorName, snippet) {
+            if (!currentUser) {
+                window.location.href = 'auth.html';
+                return;
+            }
+            quotedPostData = { id: Number(postId), name: authorName, message: snippet };
+            document.getElementById('quote-composer-label').innerText = `Quoting @${authorName}: "${snippet.slice(0, 60)}"`;
+            document.getElementById('quote-composer-banner').classList.remove('hidden');
+            document.getElementById('post-content').focus();
+        }
+
+        function cancelQuotePost() {
+            quotedPostData = null;
+            document.getElementById('quote-composer-banner').classList.add('hidden');
+        }
+
+        // --- VOICE CLIPS IN DMs ---
+        async function toggleVoiceRecording() {
+            const btn = document.getElementById('dm-voice-btn');
+            if (!isRecordingAudio) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    audioChunks = [];
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+                    mediaRecorder.ondataavailable = (e) => {
+                        if (e.data.size > 0) audioChunks.push(e.data);
+                    };
+
+                    mediaRecorder.onstop = () => {
+                        stream.getTracks().forEach(t => t.stop());
+                        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                        const reader = new FileReader();
+                        reader.onloadend = () => {
+                            selectedMediaUrl = reader.result;
+                            selectedMediaType = 'audio';
+                            submitDirectMessage();
+                        };
+                        reader.readAsDataURL(blob);
+                    };
+
+                    mediaRecorder.start();
+                    isRecordingAudio = true;
+                    btn.innerText = '⏹ Stop';
+                    btn.style.background = '#dc2626';
+                } catch (err) {
+                    alert('Microphone access denied or unsupported in this browser.');
+                }
+            } else if (mediaRecorder) {
+                mediaRecorder.stop();
+                isRecordingAudio = false;
+                btn.innerText = '🎤 Voice';
+                btn.style.background = '#16a34a';
+            }
+        }
+
+        // --- LIVE WATCH & REACTION ROOMS ---
+        function openWatchRoomsModal() {
+            initSocketConnection();
+            socket.emit('get_watch_rooms');
+            document.getElementById('watch-rooms-modal').classList.remove('hidden');
+        }
+
+        function closeWatchRoomsModal() {
+            document.getElementById('watch-rooms-modal').classList.add('hidden');
+        }
+
+        function createWatchRoom() {
+            if (!socket) initSocketConnection();
+            const title = document.getElementById('watch-room-title-input').value.trim() || 'Anime Watch Party';
+            socket.emit('create_watch_room', {
+                title,
+                username: currentUser ? currentUser.username : 'Guest'
+            });
+            document.getElementById('watch-room-title-input').value = '';
+        }
+
+        function joinWatchRoom(roomId) {
+            if (!socket) initSocketConnection();
+            socket.emit('join_watch_room', roomId);
+        }
+
+        function leaveWatchRoom() {
+            if (socket && activeWatchRoomId) {
+                socket.emit('leave_watch_room', activeWatchRoomId);
+            }
+            activeWatchRoomId = null;
+            document.getElementById('watch-active-room-view').classList.add('hidden');
+            document.getElementById('watch-lobby-view').classList.remove('hidden');
+        }
+
+        function sendWatchChat() {
+            const input = document.getElementById('watch-room-input');
+            const text = input.value.trim();
+            if (!text || !activeWatchRoomId || !socket) return;
+            socket.emit('watch_room_chat', { roomId: activeWatchRoomId, text });
+            input.value = '';
+        }
+
+        function sendWatchEmote(emote) {
+            if (!activeWatchRoomId || !socket) return;
+            socket.emit('watch_room_emote', { roomId: activeWatchRoomId, emote });
+        }
+
+        function appendWatchRoomLine(html) {
+            const box = document.getElementById('watch-room-chat');
+            if (!box) return;
+            const div = document.createElement('div');
+            div.innerHTML = html;
+            box.appendChild(div);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        // --- DEVICE LIMIT CHECK ---
         async function checkDeviceAccounts() {
             const deviceId = getOrCreateDeviceId();
             try {
@@ -615,7 +880,7 @@
             }
         }
 
-        // --- SOCKET CONNECTION & TYPING INDICATORS ---
+        // --- SOCKET CONNECTION, TYPING, POLLS & WATCH ROOMS ---
 
         function initSocketConnection() {
             if (!socket) {
@@ -625,6 +890,66 @@
                     if (currentUser && currentUser.id) {
                         socket.emit('identify_user', currentUser.id);
                     }
+                    socket.emit('get_watch_rooms');
+                });
+
+                socket.on('watch_rooms_list', (rooms) => {
+                    const list = document.getElementById('watch-rooms-list');
+                    if (!list) return;
+                    list.innerHTML = '';
+                    if (!Array.isArray(rooms) || rooms.length === 0) {
+                        list.innerHTML = '<p style="color: #94a3b8; font-size: 0.85rem;">No active watch rooms yet. Create one above!</p>';
+                        return;
+                    }
+                    rooms.forEach(r => {
+                        const row = document.createElement('div');
+                        row.style.cssText = 'padding: 10px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;';
+                        row.innerHTML = `
+                            <div>
+                                <div style="color: #fff; font-weight: 600; font-size: 0.85rem;">${escapeHtml(r.title)}</div>
+                                <div style="color: #94a3b8; font-size: 0.72rem;">Host: @${escapeHtml(r.host)} • ${r.count} watching</div>
+                            </div>
+                            <button type="button" onclick="joinWatchRoom('${r.id}')" class="btn-small" style="background: #0284c7;">Join</button>
+                        `;
+                        list.appendChild(row);
+                    });
+                });
+
+                socket.on('watch_room_joined', (room) => {
+                    activeWatchRoomId = room.id;
+                    document.getElementById('active-watch-room-title').innerText = `📺 ${room.title}`;
+                    document.getElementById('watch-room-chat').innerHTML = '';
+                    document.getElementById('watch-lobby-view').classList.add('hidden');
+                    document.getElementById('watch-active-room-view').classList.remove('hidden');
+                });
+
+                socket.on('watch_room_system', (msg) => {
+                    appendWatchRoomLine(`<span style="color: #94a3b8; font-style: italic;">${escapeHtml(msg.text)}</span>`);
+                });
+
+                socket.on('watch_room_message', (msg) => {
+                    appendWatchRoomLine(`<strong style="color: #818cf8;">@${escapeHtml(msg.username)}:</strong> <span style="color: #e2e8f0;">${escapeHtml(msg.text)}</span>`);
+                });
+
+                socket.on('watch_room_reaction', (rxn) => {
+                    appendWatchRoomLine(`<span style="color: #f472b6;">@${escapeHtml(rxn.username)} reacted ${escapeHtml(rxn.emote)}</span>`);
+                });
+
+                socket.on('poll_updated', (data) => {
+                    const pollEl = document.getElementById(`poll-box-post-${data.post_id}`);
+                    if (!pollEl || !data.poll) return;
+
+                    const total = data.poll.total_votes || 0;
+                    const buttons = pollEl.querySelectorAll('.poll-option-btn');
+                    data.poll.options.forEach((opt, idx) => {
+                        const btn = buttons[idx];
+                        if (!btn) return;
+                        const pct = total > 0 ? Math.round((opt.votes / total) * 100) : 0;
+                        const countSpan = btn.querySelector('.poll-vote-meta');
+                        if (countSpan) countSpan.innerText = `${opt.votes} (${pct}%)`;
+                    });
+                    const totalSpan = pollEl.querySelector('.poll-total-label');
+                    if (totalSpan) totalSpan.innerText = `${total} total vote${total === 1 ? '' : 's'}`;
                 });
 
                 socket.on('user_typing_start', (data) => {
@@ -822,6 +1147,8 @@
             if (msg.media_url) {
                 if (msg.media_type === 'video') {
                     mediaMarkup = `<video src="${msg.media_url}" controls style="max-width: 100%; border-radius: 4px; margin-top: 4px;"></video>`;
+                } else if (msg.media_type === 'audio') {
+                    mediaMarkup = `<audio src="${msg.media_url}" controls style="max-width: 100%; margin-top: 4px;"></audio>`;
                 } else {
                     mediaMarkup = `<img src="${msg.media_url}" style="max-width: 100%; border-radius: 4px; margin-top: 4px;" alt="Media">`;
                 }
@@ -1098,8 +1425,8 @@
             if (!currentUser) return;
             document.getElementById('avatar-style-select').value = currentUser.avatar_style || 'bottts';
             document.getElementById('avatar-seed-input').value = currentUser.avatar_seed || currentUser.username;
-            document.getElementById('profile-title-input').value = currentUser.title || 'Novice Adventurer';
-            selectedBadgeEmoji = currentUser.badge || '⭐';
+            document.getElementById('profile-title-input').value = currentUser.base_title || currentUser.title || 'Novice Adventurer';
+            selectedBadgeEmoji = currentUser.base_badge || currentUser.badge || '⭐';
 
             pendingCustomAvatarBase64 = currentUser.custom_avatar_url || null;
 
@@ -1167,13 +1494,7 @@
                 const data = await res.json();
 
                 if (res.ok) {
-                    currentUser.avatar_style = style;
-                    currentUser.avatar_seed = seed;
-                    currentUser.custom_avatar_url = pendingCustomAvatarBase64;
-                    currentUser.avatar_url = data.avatar_url;
-                    currentUser.title = data.title;
-                    currentUser.badge = data.badge;
-
+                    currentUser = data.user || currentUser;
                     updateUIState();
                     closeAvatarModal();
                     loadMessages();
@@ -1287,7 +1608,7 @@
             closeMemeStudio();
         }
 
-        // --- FEED RENDERER WITH REPORTING, BLOCKING, FOLLOW, SPOILERS, & BADGES ---
+        // --- FEED RENDERER ---
 
         function updateNsfwBadge() {
             const badge = document.getElementById('nsfw-status-badge');
@@ -1401,6 +1722,7 @@
         function updateUIState() {
             const authBtn = document.getElementById('auth-btn');
             const avatarBtn = document.getElementById('avatar-btn');
+            const gachaBtn = document.getElementById('gacha-btn');
             const inboxBtn = document.getElementById('inbox-btn');
             const blocksBtn = document.getElementById('blocks-btn');
             const userStatus = document.getElementById('user-status');
@@ -1419,6 +1741,11 @@
 
                 if (authBtn) authBtn.innerText = 'Logout';
                 if (avatarBtn) avatarBtn.classList.remove('hidden');
+                if (gachaBtn) {
+                    gachaBtn.classList.remove('hidden');
+                    gachaBtn.disabled = Boolean(currentUser.daily_gacha_claimed);
+                    gachaBtn.innerText = currentUser.daily_gacha_claimed ? '🎲 Pulled Today' : '🎲 Daily Gacha';
+                }
                 if (inboxBtn) inboxBtn.classList.remove('hidden');
                 if (blocksBtn) blocksBtn.classList.remove('hidden');
                 if (postForm) postForm.classList.remove('hidden');
@@ -1438,6 +1765,7 @@
 
                 if (authBtn) authBtn.innerText = 'Login / Register';
                 if (avatarBtn) avatarBtn.classList.add('hidden');
+                if (gachaBtn) gachaBtn.classList.add('hidden');
                 if (inboxBtn) inboxBtn.classList.add('hidden');
                 if (blocksBtn) blocksBtn.classList.add('hidden');
                 if (postForm) postForm.classList.add('hidden');
@@ -1462,6 +1790,22 @@
             }
         }
 
+        async function fetchSavedPostsList() {
+            if (!currentUser) {
+                savedPostIds = [];
+                return;
+            }
+            try {
+                const res = await fetch('/api/saved-posts', { credentials: 'include' });
+                if (res.ok) {
+                    const ids = await res.json();
+                    savedPostIds = Array.isArray(ids) ? ids.map(Number) : [];
+                }
+            } catch (e) {
+                savedPostIds = [];
+            }
+        }
+
         function handleAuthButtonClick() {
             if (currentUser) {
                 handleLogout();
@@ -1472,13 +1816,78 @@
 
         function switchFeedTab(tab) {
             currentFeedTab = tab;
-            const publicBtn = document.getElementById('tab-public');
-            const followingBtn = document.getElementById('tab-following');
-
-            if (publicBtn) publicBtn.classList.toggle('active', tab === 'public');
-            if (followingBtn) followingBtn.classList.toggle('active', tab === 'following');
-
+            syncFeedTabButtons();
             loadMessages();
+        }
+
+        async function voteOnPoll(pollId, optionId) {
+            if (!currentUser) {
+                window.location.href = 'auth.html';
+                return;
+            }
+            try {
+                const res = await fetch(`/api/polls/${encodeURIComponent(pollId)}/vote`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ option_id: Number(optionId) })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to vote.');
+                }
+            } catch (err) {
+                alert('Error voting in poll.');
+            }
+        }
+
+        async function togglePinPost(postId) {
+            if (!currentUser) return;
+            try {
+                const res = await fetch(`/api/pin/${encodeURIComponent(postId)}`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    currentUser.pinned_post_id = data.pinned_post_id;
+                    alert(data.message);
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to pin post.');
+                }
+            } catch (err) {
+                alert('Error pinning post.');
+            }
+        }
+
+        async function toggleSavePost(postId) {
+            if (!currentUser) {
+                window.location.href = 'auth.html';
+                return;
+            }
+            const numericPostId = Number(postId);
+            try {
+                const res = await fetch(`/api/save/${numericPostId}`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    if (data.saved) {
+                        if (!savedPostIds.includes(numericPostId)) savedPostIds.push(numericPostId);
+                    } else {
+                        savedPostIds = savedPostIds.filter(id => id !== numericPostId);
+                    }
+                    loadMessages();
+                } else {
+                    alert(data.error || 'Failed to save post.');
+                }
+            } catch (err) {
+                alert('Error saving post.');
+            }
         }
 
         function renderSinglePost(msg, prepend = false) {
@@ -1529,14 +1938,55 @@
                 }
             }
 
+            // Quoted Post Box
+            let quoteHtml = '';
+            if (msg.quoted_post) {
+                quoteHtml = `
+                    <div class="quote-box">
+                        <div style="color: #818cf8; font-weight: 700; margin-bottom: 4px;">↪ @${escapeHtml(msg.quoted_post.name || 'Anonymous')}</div>
+                        <div style="color: #cbd5e1;">${escapeHtml(msg.quoted_post.message || '')}</div>
+                        ${msg.quoted_post.image_url ? `<img src="${msg.quoted_post.image_url}" style="max-height: 140px; border-radius: 4px; margin-top: 6px;" alt="Quoted media">` : ''}
+                    </div>
+                `;
+            }
+
+            // Poll Box
+            let pollHtml = '';
+            if (msg.poll && Array.isArray(msg.poll.options)) {
+                const total = msg.poll.total_votes || 0;
+                const optsMarkup = msg.poll.options.map(opt => {
+                    const pct = total > 0 ? Math.round((opt.votes / total) * 100) : 0;
+                    const isVoted = Number(msg.poll.user_voted_option_id) === Number(opt.id);
+                    return `
+                        <button type="button" class="poll-option-btn ${isVoted ? 'voted' : ''}" onclick="voteOnPoll(${msg.poll.id}, ${opt.id})">
+                            <span>${escapeHtml(opt.text)} ${isVoted ? '✓' : ''}</span>
+                            <span class="poll-vote-meta" style="color: #94a3b8; font-size: 0.75rem;">${opt.votes} (${pct}%)</span>
+                        </button>
+                    `;
+                }).join('');
+
+                pollHtml = `
+                    <div class="poll-box" id="poll-box-post-${msg.id}">
+                        <div style="font-weight: 700; color: #e2e8f0; font-size: 0.88rem; margin-bottom: 4px;">📊 ${escapeHtml(msg.poll.question)}</div>
+                        ${optsMarkup}
+                        <div class="poll-total-label" style="color: #94a3b8; font-size: 0.72rem; margin-top: 6px;">${total} total vote${total === 1 ? '' : 's'}</div>
+                    </div>
+                `;
+            }
+
             const isOwner = currentUser && (
                 (msg.user_id && Number(currentUser.id) === Number(msg.user_id)) ||
                 (currentUser.username === msg.name)
             );
 
+            const isPinned = currentUser && Number(currentUser.pinned_post_id) === Number(msg.id);
+            const isSaved = savedPostIds.includes(Number(msg.id));
+
             let deleteBtnHtml = '';
+            let pinBtnHtml = '';
             if (isOwner) {
                 deleteBtnHtml = `<button onclick="deletePost(${msg.id})" class="btn-delete">Delete</button>`;
+                pinBtnHtml = `<button type="button" onclick="togglePinPost(${msg.id})" class="btn-small" style="background: #0369a1;">${isPinned ? 'Unpin' : '📌 Pin'}</button>`;
             }
 
             let followBtnHtml = '';
@@ -1570,10 +2020,18 @@
                 spoilerBadgeHtml = `<span class="spoiler-badge">Spoiler</span>`;
             }
 
+            let pinnedBadgeHtml = '';
+            if (isPinned) {
+                pinnedBadgeHtml = `<span class="pinned-badge">📌 Pinned</span>`;
+            }
+
             const avatarUrl = msg.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(msg.name || 'user')}`;
             const dateStr = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
             const userBadge = msg.badge || '⭐';
             const userTitle = msg.title || 'Novice Adventurer';
+
+            const safeSnippet = (msg.message || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+            const safeAuthor = escapeHtml(msg.name || 'Anonymous').replace(/'/g, '&#39;');
 
             card.innerHTML = `
                 <div class="msg-header">
@@ -1582,6 +2040,7 @@
                         <span class="msg-author">${escapeHtml(msg.name || 'Anonymous')}</span>
                         <span>${userBadge}</span>
                         <span class="user-title-badge">${escapeHtml(userTitle)}</span>
+                        ${pinnedBadgeHtml}
                         ${nsfwBadgeHtml}
                         ${spoilerBadgeHtml}
                         ${followBtnHtml}
@@ -1595,7 +2054,14 @@
                     </div>
                 </div>
                 ${textHtml}
+                ${quoteHtml}
+                ${pollHtml}
                 ${imageHtml}
+                <div class="post-actions-row">
+                    <button type="button" onclick="toggleSavePost(${msg.id})" class="btn-small" style="background: ${isSaved ? '#059669' : '#334155'};">${isSaved ? '🔖 Saved' : '🔖 Save'}</button>
+                    <button type="button" onclick="startQuotePost(${msg.id}, '${safeAuthor}', '${safeSnippet}')" class="btn-small" style="background: #334155;">🔁 Quote</button>
+                    ${pinBtnHtml}
+                </div>
             `;
 
             if (prepend && messagesContainer.firstChild) {
@@ -1707,6 +2173,18 @@
             let isSpoilerCheckbox = document.getElementById('post-is-spoiler').checked;
             const submitBtn = document.getElementById('submit-btn');
 
+            const pollQuestion = document.getElementById('poll-question-input').value.trim();
+            const pollOpts = [
+                document.getElementById('poll-opt-1').value.trim(),
+                document.getElementById('poll-opt-2').value.trim(),
+                document.getElementById('poll-opt-3').value.trim(),
+                document.getElementById('poll-opt-4').value.trim()
+            ].filter(Boolean);
+
+            const pollPayload = (pollQuestion && pollOpts.length >= 2)
+                ? { question: pollQuestion, options: pollOpts }
+                : null;
+
             let base64Image = editedBase64Image;
 
             if (!base64Image && imageFileInput) {
@@ -1720,8 +2198,8 @@
                 }
             }
 
-            if (!contentInput && !base64Image) {
-                alert('Please enter a message or select an image to post.');
+            if (!contentInput && !base64Image && !quotedPostData && !pollPayload) {
+                alert('Please enter a message, attach an image, quote a post, or create a poll.');
                 return;
             }
 
@@ -1760,7 +2238,9 @@
                         message: contentInput,
                         image_url: base64Image,
                         is_18plus: is18PlusCheckbox,
-                        is_spoiler: isSpoilerCheckbox
+                        is_spoiler: isSpoilerCheckbox,
+                        quoted_post_id: quotedPostData ? quotedPostData.id : null,
+                        poll: pollPayload
                     })
                 });
 
@@ -1769,7 +2249,14 @@
                     document.getElementById('post-image').value = '';
                     document.getElementById('post-is-18plus').checked = false;
                     document.getElementById('post-is-spoiler').checked = false;
+                    document.getElementById('poll-question-input').value = '';
+                    document.getElementById('poll-opt-1').value = '';
+                    document.getElementById('poll-opt-2').value = '';
+                    document.getElementById('poll-opt-3').value = '';
+                    document.getElementById('poll-opt-4').value = '';
+                    document.getElementById('poll-creator-box').classList.add('hidden');
                     document.getElementById('meme-studio-btn').classList.add('hidden');
+                    cancelQuotePost();
                     selectedOriginalImage = null;
                     editedBase64Image = null;
                 } else {
@@ -1836,6 +2323,7 @@
                 await fetch('/api/logout', { method: 'POST', credentials: 'include' });
                 currentUser = null;
                 followingUserIds = [];
+                savedPostIds = [];
                 blockedUsersList = [];
                 blockedUserIds = [];
                 show18Plus = false;
