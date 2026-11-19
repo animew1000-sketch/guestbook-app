@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const { Server } = require('socket.io');
@@ -20,11 +21,11 @@ const sessionMiddleware = session({
     secret: process.env.SESSION_SECRET || 'anime_social_secret_key',
     resave: false,
     saveUninitialized: false,
-    cookie: { 
-        secure: process.env.NODE_ENV === 'production', 
+    cookie: {
+        secure: process.env.NODE_ENV === 'production',
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000 
+        maxAge: 24 * 60 * 60 * 1000
     }
 });
 
@@ -35,6 +36,27 @@ app.use((req, res, next) => {
         req.session.touch();
     }
     next();
+});
+
+// Serve custom favicon.svg if present, otherwise serve a built-in SVG icon for every page
+app.get(['/favicon.svg', '/favicon.ico'], (req, res) => {
+    const customFavicon = path.join(__dirname, 'public', 'favicon.svg');
+    if (fs.existsSync(customFavicon)) {
+        return res.sendFile(customFavicon);
+    }
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.send(`
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+            <defs>
+                <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#818cf8"/>
+                    <stop offset="100%" stop-color="#c084fc"/>
+                </linearGradient>
+            </defs>
+            <rect width="64" height="64" rx="16" fill="#0f172a"/>
+            <path d="M32 10 L38 26 L54 32 L38 38 L32 54 L26 38 L10 32 L26 26 Z" fill="url(#g)"/>
+        </svg>
+    `);
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -96,7 +118,7 @@ io.on('connection', (socket) => {
     socket.on('send_direct_message', async (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id, message, media_url, media_type, is_18plus } = data;
-        
+
         if (!receiver_id || (!message && !media_url) || !senderId) return;
 
         try {
@@ -151,7 +173,7 @@ function calculateAge(birthdateStr) {
     const birthDate = new Date(birthdateStr);
     let age = today.getFullYear() - birthDate.getFullYear();
     const monthDiff = today.getMonth() - birthDate.getMonth();
-    
+
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
         age--;
     }
@@ -274,9 +296,9 @@ app.post('/api/login', async (req, res) => {
         const avatarSeed = user.avatar_seed || user.username;
         const customAvatarUrl = user.custom_avatar_url || null;
 
-        req.session.user = { 
-            id: user.id, 
-            username: user.username, 
+        req.session.user = {
+            id: user.id,
+            username: user.username,
             email: user.email,
             birthdate: user.birthdate,
             age_verified: ageVerified,
@@ -289,7 +311,7 @@ app.post('/api/login', async (req, res) => {
             badge: user.badge || '⭐',
             device_id: user.device_id
         };
-        
+
         req.session.save(err => {
             if (err) return res.status(500).json({ error: 'Session save error' });
             res.json({ user: req.session.user });
@@ -405,8 +427,8 @@ app.post('/api/avatar', async (req, res) => {
 
         req.session.save(err => {
             if (err) return res.status(500).json({ error: 'Session save error' });
-            res.json({ 
-                message: 'Profile updated!', 
+            res.json({
+                message: 'Profile updated!',
                 avatar_url: req.session.user.avatar_url,
                 title: userTitle,
                 badge: userBadge
@@ -446,21 +468,85 @@ app.post('/api/verify-birthdate', async (req, res) => {
             if (err) return res.status(500).json({ error: 'Session save error' });
 
             if (isMinor) {
-                return res.json({ 
-                    is_minor: true, 
-                    age_verified: false, 
-                    message: `Access denied. You are ${age} years old. 18+ content is locked until your 18th birthday.` 
+                return res.json({
+                    is_minor: true,
+                    age_verified: false,
+                    message: `Access denied. You are ${age} years old. 18+ content is locked until your 18th birthday.`
                 });
             }
 
-            res.json({ 
-                is_minor: false, 
-                age_verified: true, 
-                message: 'Birthdate verified! 18+ content access granted.' 
+            res.json({
+                is_minor: false,
+                age_verified: true,
+                message: 'Birthdate verified! 18+ content access granted.'
             });
         });
     } catch (err) {
         res.status(500).json({ error: 'Database error storing birthdate.' });
+    }
+});
+
+// --- FOLLOW / UNFOLLOW SYSTEM ---
+
+app.get('/api/following', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.json([]);
+    }
+
+    try {
+        const rows = await db.query(
+            'SELECT following_id FROM follows WHERE follower_id = ?',
+            [Number(req.session.user.id)]
+        );
+        const list = Array.isArray(rows) ? rows : (rows.rows || []);
+        res.json(list.map(r => Number(r.following_id)));
+    } catch (err) {
+        console.error('GET /api/following error:', err);
+        res.status(500).json({ error: 'Failed to fetch following list.' });
+    }
+});
+
+app.post('/api/follow/:target_id', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to follow users.' });
+    }
+
+    const followerId = Number(req.session.user.id);
+    const followingId = Number(req.params.target_id);
+
+    if (!Number.isInteger(followingId) || followingId <= 0 || followerId === followingId) {
+        return res.status(400).json({ error: 'Invalid target user.' });
+    }
+
+    try {
+        const targetRows = await db.query('SELECT id FROM users WHERE id = ?', [followingId]);
+        const targetUsers = Array.isArray(targetRows) ? targetRows : (targetRows.rows || []);
+        if (targetUsers.length === 0) {
+            return res.status(404).json({ error: 'Target user not found.' });
+        }
+
+        const existingRows = await db.query(
+            'SELECT id FROM follows WHERE follower_id = ? AND following_id = ?',
+            [followerId, followingId]
+        );
+        const existing = Array.isArray(existingRows) ? existingRows : (existingRows.rows || []);
+
+        if (existing.length > 0) {
+            await db.query(
+                'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
+                [followerId, followingId]
+            );
+            return res.json({ following: false, following_id: followingId, message: 'Unfollowed user.' });
+        } else {
+            await db.query(
+                'INSERT INTO follows (follower_id, following_id) VALUES (?, ?)',
+                [followerId, followingId]
+            );
+            return res.json({ following: true, following_id: followingId, message: 'Following user.' });
+        }
+    } catch (err) {
+        console.error('POST /api/follow/:target_id error:', err);
+        res.status(500).json({ error: `Failed to update follow status: ${err.message}` });
     }
 });
 
@@ -487,7 +573,6 @@ app.post('/api/reports', async (req, res) => {
     }
 });
 
-// TOGGLE BLOCK / UNBLOCK
 app.post('/api/block/:target_id', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to block users.' });
@@ -514,7 +599,6 @@ app.post('/api/block/:target_id', async (req, res) => {
     }
 });
 
-// EXPLICIT UNBLOCK ROUTE
 app.post('/api/unblock/:target_id', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ error: 'You must log in to unblock users.' });
@@ -531,7 +615,6 @@ app.post('/api/unblock/:target_id', async (req, res) => {
     }
 });
 
-// FETCH BLOCKED USERS WITH DETAILS
 app.get('/api/blocks', async (req, res) => {
     if (!req.session || !req.session.user) {
         return res.json([]);
@@ -629,7 +712,7 @@ app.post('/api/messages', async (req, res) => {
     }
 
     const { message, image_url, is_18plus, is_spoiler } = req.body;
-    
+
     if ((!message || message.trim() === '') && !image_url) {
         return res.status(400).json({ error: 'A post must contain text or an image.' });
     }
