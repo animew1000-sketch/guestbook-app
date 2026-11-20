@@ -178,61 +178,6 @@ io.on('connection', (socket) => {
         registerUserSocket(userId);
     });
 
-    socket.on('call_user', (data) => {
-        const callerId = sessionUser ? Number(sessionUser.id) : Number(data?.caller_id);
-        const targetId = Number(data?.target_id);
-        if (!callerId || !targetId) return;
-
-        io.to(`user_${targetId}`).emit('incoming_call', {
-            caller_id: callerId,
-            caller_username: sessionUser ? sessionUser.username : (data?.caller_username || 'User')
-        });
-    });
-
-    socket.on('call_offer', (data) => {
-        const callerId = sessionUser ? Number(sessionUser.id) : Number(data?.caller_id);
-        const targetId = Number(data?.target_id);
-        if (!callerId || !targetId || !data?.offer) return;
-
-        io.to(`user_${targetId}`).emit('call_offer', {
-            caller_id: callerId,
-            caller_username: sessionUser ? sessionUser.username : (data?.caller_username || 'User'),
-            offer: data.offer
-        });
-    });
-
-    socket.on('call_answer', (data) => {
-        const responderId = sessionUser ? Number(sessionUser.id) : Number(data?.responder_id);
-        const targetId = Number(data?.target_id);
-        if (!responderId || !targetId || !data?.answer) return;
-
-        io.to(`user_${targetId}`).emit('call_answer', {
-            responder_id: responderId,
-            answer: data.answer
-        });
-    });
-
-    socket.on('ice_candidate', (data) => {
-        const senderId = sessionUser ? Number(sessionUser.id) : Number(data?.sender_id);
-        const targetId = Number(data?.target_id);
-        if (!senderId || !targetId || !data?.candidate) return;
-
-        io.to(`user_${targetId}`).emit('ice_candidate', {
-            sender_id: senderId,
-            candidate: data.candidate
-        });
-    });
-
-    socket.on('end_call', (data) => {
-        const senderId = sessionUser ? Number(sessionUser.id) : Number(data?.sender_id);
-        const targetId = Number(data?.target_id);
-        if (!targetId) return;
-
-        io.to(`user_${targetId}`).emit('call_ended', {
-            sender_id: senderId
-        });
-    });
-
     socket.on('typing_start', (data) => {
         const senderId = sessionUser ? sessionUser.id : data.sender_id;
         const { receiver_id } = data;
@@ -485,6 +430,85 @@ app.get('/api/users/:id/profile', async (req, res) => {
     } catch (err) {
         console.error('GET /api/users/:id/profile error:', err);
         res.status(500).json({ error: 'Failed to load user profile.' });
+    }
+});
+
+// --- POST THREAD REPLIES / COMMENTS ---
+app.get('/api/messages/:id/comments', async (req, res) => {
+    const postId = Number(req.params.id);
+    if (!Number.isInteger(postId) || postId <= 0) {
+        return res.status(400).json({ error: 'Invalid post ID.' });
+    }
+
+    try {
+        const rows = await db.query(
+            `SELECT comments.id, comments.post_id, comments.user_id, comments.username, comments.message, comments.created_at,
+                    users.avatar_style, users.avatar_seed, users.custom_avatar_url
+             FROM comments
+             LEFT JOIN users ON comments.user_id = users.id
+             WHERE comments.post_id = ?
+             ORDER BY comments.id ASC`,
+            [postId]
+        );
+
+        const list = (Array.isArray(rows) ? rows : []).map(r => ({
+            id: Number(r.id),
+            post_id: Number(r.post_id),
+            user_id: r.user_id ? Number(r.user_id) : null,
+            username: r.username,
+            message: r.message,
+            created_at: r.created_at,
+            avatar_url: buildAvatarUrl(r.custom_avatar_url, r.avatar_style, r.avatar_seed || r.username)
+        }));
+
+        res.json(list);
+    } catch (err) {
+        console.error('GET /api/messages/:id/comments error:', err);
+        res.status(500).json({ error: 'Failed to load comments.' });
+    }
+});
+
+app.post('/api/messages/:id/comments', async (req, res) => {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ error: 'You must log in to reply.' });
+    }
+
+    const postId = Number(req.params.id);
+    const rawMessage = String(req.body?.message || '').trim();
+
+    if (!Number.isInteger(postId) || postId <= 0) {
+        return res.status(400).json({ error: 'Invalid post ID.' });
+    }
+    if (!rawMessage) {
+        return res.status(400).json({ error: 'Reply cannot be empty.' });
+    }
+
+    const filterResult = applyTextFilters(rawMessage);
+    const cleanText = filterResult.sanitizedText.substring(0, 400);
+    const userId = Number(req.session.user.id);
+    const username = req.session.user.username;
+
+    try {
+        const result = await db.query(
+            'INSERT INTO comments (post_id, user_id, username, message) VALUES (?, ?, ?, ?)',
+            [postId, userId, username, cleanText]
+        );
+
+        const commentPayload = {
+            id: Number(result.insertId),
+            post_id: postId,
+            user_id: userId,
+            username,
+            message: cleanText,
+            created_at: new Date(),
+            avatar_url: req.session.user.avatar_url
+        };
+
+        io.emit('new_post_comment', commentPayload);
+        res.json({ comment: commentPayload });
+    } catch (err) {
+        console.error('POST /api/messages/:id/comments error:', err);
+        res.status(500).json({ error: 'Failed to post reply.' });
     }
 });
 
